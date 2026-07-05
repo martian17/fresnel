@@ -3,11 +3,11 @@ use std::thread;
 
 use crate::nodes::core::{
     WavePacket,
-    PortMessage,
+    WpBatch,
     TxPort,
     RxPort,
     WorkerHandle,
-    RxTick,
+    BatchConstraint,
 };
 
 
@@ -15,6 +15,7 @@ use crate::nodes::core::{
 struct SinglePortWorker {
     port: RxPort,
     batch_period: u64,
+    batch_size: usize,
     // jones matrix
     // but extended as kraus operators
 }
@@ -22,23 +23,27 @@ struct SinglePortWorker {
 
 impl SinglePortWorker {
     fn spawn() -> WorkerHandle {
-        let (tx_raw, rx_raw) = sync_channel::<PortMessage>(3);
+        let (tx_raw, rx_raw) = sync_channel::<WpBatch>(3);
         let tx = TxPort {
             time: 0,
             tx: tx_raw,
         };
         let rx = RxPort {
-            time: 0,
+            period_start: 0,
+            period_end: 0,
             rx: rx_raw,
             // set the empty iterator
-            iterator: Vec::new().into_iter().peekable(),
+            current_period: Vec::new().into_iter().peekable(),
+            current_time: 0,
         };
         let mut worker = Self {
             port: rx,
-            // 100 us gives us approx. 1000 wave packets
+            // 20 us gives us approx. 200 wave packets
             // hardcode this as picoseconds for now
-            // we might want to use a more sophisticated batching heuristics
-            batch_period: 100_000_000,
+            // this represents about 6.4kb of memory vs L1 cache which is
+            // generally around 32 to 100kb
+            batch_period: 20_000_000,
+            batch_size: 200,
         };
         thread::spawn(move ||{
             worker.run();
@@ -47,11 +52,19 @@ impl SinglePortWorker {
             ports: vec![tx],
         }
     }
-    fn run(&mut self, ) {
+    fn run(&mut self) {
         loop {
-            let batch_start = self.port.time;
+            // since it's a single port, no need to worry about boundary condition
+            // therefore we just get a batch here
+            let batch = self.port.get_batch(BatchConstraint{
+                timeout: self.port.current_time + self.batch_period,
+                max_size: self.batch_size,
+            });
+            let batches = vec![&batch];
+
             let mut packets: Vec<WavePacket> = Vec::new();
             loop {
+                
                 let tick = self.port.tick();
                 let tick_time = tick.time();
                 if let RxTick::Wp(wp) = tick {
