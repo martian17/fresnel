@@ -1,12 +1,13 @@
 use std::sync::{Mutex, Condvar, Arc};
-// use std::rc::{Rc};
 use std::cell::UnsafeCell;
-use smallvec::{SmallVec, smallvec};
+use std::mem::MaybeUninit;
+use smallvec::{SmallVec};
 
 use crate::concurrency::registry::{
     CellState,
     CellStateRegistry,
 };
+use crate::nodes::core::WavePacket;
 
 
 // make it 32 if it needs to support a larger optical circuit
@@ -16,16 +17,14 @@ type PortId = u8;
 
 
 #[derive(Clone)]
-struct EPPSEntity {
-    node: NodeId,
-    time: u64,
-    // todo: these could be possibly compacted to u32
-    left: (OpIndex, PortId),
-    right: (OpIndex, PortId),
-}
-
-#[derive(Clone)]
 enum Operator {
+    EPPS {
+        node: NodeId,
+        time: u64,
+        // todo: these could be possibly compacted to u32
+        left: (OpIndex, PortId),
+        right: (OpIndex, PortId),
+    },
     Single {
         node: NodeId,
         time: u64,
@@ -57,14 +56,16 @@ enum Operator {
     SPD {
         node: NodeId,
         time: u64,
-    }
+    },
 }
 
-
+// parameter tuned to be packed in 512 bytes
+// further tuning may be necessary specific to experiments
 #[derive(Clone)]
 struct IslandOfInteraction {
     operators: SmallVec<[Operator; 13]>,
-    eppss: SmallVec<[EPPSEntity; 2]>,
+    // (wavepacket id, operator index, operator exit port identification)
+    active_packets: SmallVec<[(u32, OpIndex, u8); 8]>
 }
 
 #[derive(Clone)]
@@ -72,7 +73,7 @@ struct Tombstone{
     // 256 qubits is more than too much to handle already
     // so u8 suffices
     ref_cnt: u8,
-    move_idx: u32,
+    move_destination: u32,
 }
 
 
@@ -86,43 +87,184 @@ pub enum InteractionCell {
 }
 
 
-pub struct InteractionStore {
-    // TODO: Replace this with RwLock and benchmark
-    // RwLock might be slower because of true sharing
-    registry: Mutex<CellStateRegistry>,
-    buff: Arc<[UnsafeCell<InteractionCell>]>,
-
-    // virtual index inside the u32 space
-    start_index: u32,
-    end_index: u32,
+// multi threaded data structure that exposes relevant slices of data
+pub struct InteractionStore{
+    data: Mutex<StoreData>,
     cvar: Condvar,
 }
 
-pub struct InteractionStoreSlice<'a> {
+
+struct WrappingIterU32 {
+    i: u32,
+    end: u32,
+}
+
+impl WrappingIterU32 {
+    fn new(start: u32, end: u32) -> Self {
+        Self {
+            i: start,
+            end,
+        }
+    }
+}
+impl std::iter::Iterator for WrappingIterU32 {
+    type Item = u32;
+    fn next(&mut self) -> Option<u32> {
+        let i = self.i;
+        if i == self.end {
+            return None
+        }
+        self.i = self.i.wrapping_add(1);
+        return Some(i);
+    }
+}
+
+
+impl InteractionStore {
+    fn new() -> Self {
+        let init_buff_size = 512;
+        Self {
+            data: Mutex::new(StoreData {
+                registry: CellStateRegistry::new(),
+                buff: StatecellBuffer::new(init_buff_size).into(),
+            }),
+            // it may be better if cvar was owned by each node
+            // in that case, it would get notified when nodes were added
+            cvar: Condvar::new(),
+        }
+    }
+    // states are created in batch, only by EPPS.
+    // States are only merged, not created afterwards.
+    fn create_states(&mut self, n: u32) -> InteractionStoreSlice<'_> {
+        let mut data = self.data.lock().unwrap();
+        // in-line realloc, since this is the only place where states are created
+        data.suggest_realloc(n);
+
+        let start_idx = data.registry.end_index;
+        let end_idx = data.registry.end_index.wrapping_add(n);
+        for handle in WrappingIterU32::new(start_idx, end_idx) {
+            data.buff.unsafely_initialize_cell_with(handle, InteractionCell::None)
+        }
+        InteractionStoreSlice{
+            parent: self,
+            buff: data.buff.clone(),
+            indices: WrappingIterU32::new(start_idx, end_idx).collect(),
+        }
+    }
+
+    fn get_states (&mut self, mut wp_batches: Vec<&mut Vec<WavePacket>>) -> InteractionStoreSlice<'_> {
+        // first pass: check availability and update the moved states
+        let mut data = self.cvar.wait_while(self.data.lock().unwrap(), |data| {
+            for batch in wp_batches.iter_mut() {
+                for wp in batch.iter_mut() {
+                    // check if moved
+                    // common case skips over this part
+                    while data.registry.is_moved(wp.state_handle) {
+                        let InteractionCell::Tombstone(tombstone) = data.buff.get_mut(wp.state_handle) else {
+                            panic!("InteractionStore data integrity fault: registry indicates tombstone, but found something else");
+                        };
+                        tombstone.ref_cnt -= 1;
+                        wp.state_handle = tombstone.move_destination;
+                        if tombstone.ref_cnt == 0 {
+                            // TODO: consider rewriting CellStatel to 3 state enum
+                            // Free, Locked, and Moved
+                            data.registry.set(wp.state_handle, CellState{
+                                locked: false,
+                                moved: false,
+                            });
+                        }
+                    }
+                    if data.registry.is_locked(wp.state_handle) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }).unwrap();
+        // second pass: claim the slots by locking them
+        let mut indices: Vec<u32> = Vec::new();
+        let mut previous_handle: Option<u32> = None;
+        for batch in wp_batches.iter() {
+            for wp in batch.iter() {
+                if previous_handle == Some(wp.state_handle) || indices.contains(&wp.state_handle) {
+                    continue;
+                }
+                previous_handle = Some(wp.state_handle);
+                indices.push(wp.state_handle);
+                data.registry.set(wp.state_handle, CellState{
+                    locked: true,
+                    moved: false,
+                });
+            }
+        }
+        InteractionStoreSlice{
+            parent: self,
+            buff: data.buff.clone(),
+            indices,
+        }
+    }
+}
+
+
+pub struct StoreData {
+    registry: CellStateRegistry,
+    // Even though this is behind a mutex, 
+    buff: Arc<StatecellBuffer>,
+}
+
+impl StoreData {
+    fn suggest_realloc(&mut self, additional_cnt: u32) {
+        let current_len = self.registry.len();
+        if current_len + additional_cnt > self.buff.capacity() as u32 {
+            self.realloc(current_len + additional_cnt);
+        }
+    }
+    fn realloc(&mut self, new_len: u32) {
+        let new_capacity = new_len.next_power_of_two();
+        let new_buff = StatecellBuffer::new(new_capacity as usize);
+        let old_buff = &self.buff;
+        let mut i = self.registry.start_index;
+        while i < self.registry.end_index {
+            if !self.registry.is_locked(i) {
+                // since the sectors are unwitten or already freed/distructed (which is relevant to
+                // values stored in the heap by Smallvec<>, in case there was any overflow)
+                // we do not need to call the distructor on the old values
+                // and thus we use unsafe pointer copy (manual move)
+                unsafe {
+                    std::ptr::copy_nonoverlapping(old_buff.cell_ptr(i), new_buff.cell_ptr(i), 1);
+                }
+            }
+            i = i.wrapping_add(1);
+        }
+        self.buff = new_buff.into();
+    }
+}
+
+
+pub struct InteractionStoreSlice<'a>{
     parent: &'a InteractionStore,
-    // borrowed buffer from parent
-    //buff: &'a mut 
-    buff: Arc<[UnsafeCell<InteractionCell>]>,
+    buff: Arc<StatecellBuffer>,
     indices: Vec<u32>,
 }
 
 impl<'a> Drop for InteractionStoreSlice<'a> {
     fn drop(&mut self) {
-        let mut registry = self.parent.registry.lock().unwrap();
+        let mut data = self.parent.data.lock().unwrap();
         // if the buffer got realloced, move the results over
-        if !Arc::ptr_eq(&self.parent.buff, &self.buff) {
+        if !Arc::ptr_eq(&data.buff, &self.buff) {
             let old_buff = &self.buff;
-            let new_buff = &self.parent.buff;
-            let old_len = old_buff.len();
-            let new_len = new_buff.len();
+            let new_buff = &data.buff;
             for i in self.indices.iter().copied() {
-                let old_idx = i as usize % old_len;
-                let new_idx = i as usize % new_len;
-                copy_unsafecell(&old_buff[old_idx], &new_buff[new_idx]);
+                // since the relevant sectors on the new buffer are yet to be written
+                // we do not need to call the distructor
+                // and thus we use unsafe pointer copy (manual move)
+                unsafe {
+                    std::ptr::copy_nonoverlapping(old_buff.cell_ptr(i), new_buff.cell_ptr(i), 1);
+                }
             }
         }
         for i in self.indices.iter().copied() {
-            registry.unlock(i);
+            data.registry.unlock(i);
         }
         self.parent.cvar.notify_all();
     }
@@ -130,172 +272,39 @@ impl<'a> Drop for InteractionStoreSlice<'a> {
 
 
 
-
-
-// unsafe fn get_mut<T>(ptr: &UnsafeCell<T>) -> &mut T {
-//   unsafe { &mut *ptr.get() }
-// }
-// 
-// fn get_shared<T>(ptr: &mut T) -> &UnsafeCell<T> {
-//   let t = ptr as *mut T as *const UnsafeCell<T>;
-//   // SAFETY: `T` and `UnsafeCell<T>` have the same memory layout
-//   unsafe { &*t }
-// }
-
-fn new_statecell_buffer(size: usize) -> Arc<[UnsafeCell<InteractionCell>]>{
-    (0..size)
-        .map(|_| UnsafeCell::new(InteractionCell::None))
-        .collect::<Vec<_>>()
-        .into()
+// this struct originally contained Arc, but we are externalizing it for the sake of clarity
+// in exchange we get double indirection, but it's worth it because this is not accessed
+// in a hot loop
+struct StatecellBuffer {
+    buff: Box<[UnsafeCell<MaybeUninit<InteractionCell>>]>,
 }
 
-fn copy_unsafecell<T>(src: &UnsafeCell<T>, dst: &UnsafeCell<T>) {
-    unsafe {
-        // according to Gemini, direct memory copy lets you copy things over without
-        // unwanted .drop() callings
-        core::ptr::copy_nonoverlapping(src.get(), dst.get(), 1);
-    }
-}
-
-fn set_unsafecell<T>(dst: &UnsafeCell<T>, val: T) {
-    unsafe {
-        core::ptr::write(dst.get(), val);
-    }
-}
-
-impl InteractionStore {
-    fn new() -> Self {
-        let init_buff_size = 512;
+impl StatecellBuffer {
+    fn new(size: usize) -> Self {
         Self {
-            registry: Mutex::new(CellStateRegistry::new()),
-            buff: new_statecell_buffer(init_buff_size),
-            start_index: 0,
-            end_index: 0,
-            // it may be better if cvar was owned by each node
-            // in that case, it would get notified when nodes were added
-            cvar: Condvar::new(),
+            buff: (0..size)
+                .map(|_| UnsafeCell::new(MaybeUninit::uninit()))
+                .collect(),
         }
     }
-    // called by EPPS
-    fn create_states(&mut self, n: usize) -> InteractionStoreSlice<'_> {
-        let mut registry = self.registry.lock().unwrap();
-        let mut indices: Vec<u32> = Vec::new();
-        for i in 0..n {
-            registry.push_back(CellState{
-                locked: true,
-                moved: false,
-            });
-            indices.push(self.end_index.wrapping_add(i as u32));
-        }
-        // if the size is not enough, we resize
-        let size = self.end_index.wrapping_sub(self.start_index) as usize;
-        if size > self.buff.len() {
-            let new_buffer = new_statecell_buffer(self.buff.len() * 2);
-            vec![InteractionCell::None; self.buff.len() * 2];
-            // copy the states over
-            let mut i = self.start_index;
-            loop {
-                if i == self.end_index {
-                    break;
-                }
-                let old_idx = i as usize % self.buff.len();
-                let new_idx = i as usize % new_buffer.len();
-                copy_unsafecell(&self.buff[old_idx], &new_buffer[new_idx]);
-
-                i = i.wrapping_add(1);
-            }
-            self.buff = new_buffer;
-        }
-        InteractionStoreSlice{
-            parent: self,
-            // borrowed buffer from parent
-            buff: self.buff.clone(),
-            indices,
+    fn to_index(&self, handle: u32) -> usize {
+        handle as usize % self.buff.len()
+    }
+    fn cell_ptr(&self, handle: u32) -> *mut MaybeUninit<InteractionCell> {
+        self.buff[self.to_index(handle)].get()
+    }
+    fn unsafely_initialize_cell_with(&self, handle: u32, cell: InteractionCell) {
+        unsafe {
+            *self.cell_ptr(handle) = MaybeUninit::new(cell);
         }
     }
-    // fn get_states_neo(&mut self, packets: &mut [WavePacket]) -> InteractionStoreSlice<'_> {
-    //     
-    // }
-    fn get_state_neo(&mut self, packet_slices: Vec<&mut Vec<WavePacket>>) -> InteractionStoreSlice<'_> {
-        
+    fn get(&self, handle: u32) -> &InteractionCell {
+        unsafe{(*self.cell_ptr(handle)).assume_init_ref()}
     }
-    fn get_states(&mut self, indices: Vec<u32>) -> InteractionStoreSlice<'_> {
-        let mut registry = self.registry.lock().unwrap();
-        loop {
-            let mut all_free = true;
-            for i in indices.iter().copied() {
-                if registry.is_locked(i) {
-                    all_free = false;
-                    break;
-                }
-                let mut idx = i;
-                loop {
-                    if registry.is_locked(idx) {
-                        all_free = false;
-                        break;
-                    } else if registry.is_moved(idx) {
-                        let tombstone = if let InteractionCell::Tombstone(tombstone) = unsafe{&mut *self.buff[idx as usize].get()} {
-                            tombstone
-                        } else {
-                            panic!("Expected a tombstone, but found something else!")
-                        };
-                        // tombstone.decrement_ref_cnt();
-                        idx = tombstone.move_idx;
-                        tombstone.ref_cnt -= 1;
-                        if tombstone.ref_cnt == 0 {
-                            set_unsafecell(&self.buff[idx as usize], InteractionCell::None);
-                        }
-                    } else {
-                        // free and unlocked
-                        // success!
-                    }
-                }
-            }
-            // let all_free = indices.iter().all(|&i|!registry.is_locked(i));
-            
-            if all_free {
-                
-                return InteractionStoreSlice{
-                    parent: self,
-                    buff: self.buff.clone(),
-                    indices,
-                }
-            } else {
-                registry = self.cvar.wait(registry).unwrap();
-            }
-        }
+    fn get_mut(&self, handle: u32) -> &mut InteractionCell {
+        unsafe{(*self.cell_ptr(handle)).assume_init_mut()}
     }
-    fn commit(&mut self) {
-
+    fn capacity(&self) -> usize {
+        return self.buff.len();
     }
-}
-
-
-
-
-// struct QuantumStateStoreHandle {
-//     worker_id: u32,
-//     owned: RcCache,
-// }
-// 
-// impl QuantumStateStoreHandle {
-//     
-// }
-
-
-
-
-
-struct ProcessNode {
-    input_queue: Vec<Vec<WavePacket>>,
-}
-
-#[derive(Clone)]
-pub struct WavePacket {
-    pub t: u64,// ps
-    pub t_spread: u32,// ps, three sigma
-    pub wl: f32,
-    pub wl_spread: f32,
-    pub qs_handle: u32,
-    pub snowflake: u32,
 }

@@ -5,7 +5,7 @@ pub struct WavePacket {
     pub time_spread: u32,// ps, three sigma
     pub wl: f32,
     pub wl_spread: f32,
-    pub qs_handle: u32,
+    pub state_handle: u32,
     pub snowflake: u32,
 }
 

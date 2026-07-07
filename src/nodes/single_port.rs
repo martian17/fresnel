@@ -60,7 +60,7 @@ impl SinglePortWorker {
                 timeout: self.port.current_time + self.batch_period,
                 max_size: self.batch_size,
             });
-            let batches = vec![&batch];
+            let batches = vec![&mut batch];
 
             let mut packets: Vec<WavePacket> = Vec::new();
             loop {

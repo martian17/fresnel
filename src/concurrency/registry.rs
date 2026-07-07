@@ -5,8 +5,8 @@ pub struct CellState {
 
 pub struct CellStateRegistry {
     buff: Vec<u64>,
-    start_index: u32,
-    end_index: u32,
+    pub start_index: u32,
+    pub end_index: u32,
 }
 
 impl CellStateRegistry {
@@ -38,7 +38,7 @@ impl CellStateRegistry {
             moved: n >> (offset | 1) & 1 == 1
         }
     }
-    fn set(&mut self, i: u32, state: CellState){
+    pub fn set(&mut self, i: u32, state: CellState){
         let idx = (i.div_euclid(32) as usize) % self.buff.len();
         let offset = i.rem_euclid(32) << 1;
         let mut n = self.buff[idx];
@@ -95,6 +95,9 @@ impl CellStateRegistry {
     }
     fn drop_front(&mut self) {
         self.start_index = self.start_index.wrapping_add(1);
+    }
+    pub fn len(&self) -> u32 {
+        self.end_index.wrapping_sub(self.start_index)
     }
 }
 

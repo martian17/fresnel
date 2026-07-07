@@ -1,6 +1,5 @@
-mod core;
-mod core1;
-mod dual_port;
-mod multi_port;
-mod single_port;
+pub mod core;
+pub mod dual_port;
+pub mod multi_port;
+pub mod single_port;
 
