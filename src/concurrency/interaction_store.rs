@@ -193,11 +193,19 @@ impl InteractionStore {
                             panic!("InteractionStore data integrity fault: registry indicates tombstone, but found something else");
                         };
                         tombstone.ref_cnt -= 1;
+                        let move_destination = tombstone.move_destination;
                         if tombstone.ref_cnt == 0 {
                             data.registry.set(wp.state_handle, CellState::Retired);
+                            unsafe {
+                                (*data.buff.cell_ptr(wp.state_handle)).assume_init_drop();
+                            }
                         }
-                        wp.state_handle = tombstone.move_destination;
+                        // now the tombstone is dropped, so using a copied value
+                        // loops to the next iteration to check if it's still moved
+                        wp.state_handle = move_destination;
                     }
+                    // sanity check. At this point it should not be retired
+                    debug_assert!(data.registry.get(wp.state_handle) != CellState::Retired);
                     if data.registry.get(wp.state_handle) == CellState::Locked {
                         return false;
                     }
@@ -236,7 +244,6 @@ impl InteractionStore {
 
 pub struct StoreData {
     registry: CellStateRegistry,
-    // Even though this is behind a mutex, 
     buff: Arc<StatecellBuffer>,
 }
 
@@ -277,7 +284,7 @@ pub struct InteractionStoreSlice{
 }
 
 impl InteractionStoreSlice {
-    fn retire(&mut self, handle: u32) {
+    pub fn retire(&mut self, handle: u32) {
         self.retired.push(handle);
     }
     // TODO: Add some methods so the nodes can access the cells
@@ -286,42 +293,39 @@ impl InteractionStoreSlice {
 impl Drop for InteractionStoreSlice {
     fn drop(&mut self) {
         let mut data = self.parent.data.lock().unwrap();
+        for i in self.indices.iter().copied() {
+            data.registry.set(i, CellState::Free);
+        }
+        for i in self.retired.iter().copied() {
+            data.registry.set(i, CellState::Retired);
+            // Drops the cell. This frees up any vector or heap data that was referenced by the
+            // cell. Since this is linear access at the front, it should be cheap enough
+            // besides, the fact that the worker touched this means it's still likely to be on
+            // cache
+            unsafe {
+                (*self.buff.cell_ptr(i)).assume_init_drop();
+            }
+        }
+        for i in WrappingIterU32::new(data.registry.start_index, data.registry.end_index) {
+            if data.registry.get(i) != CellState::Retired {
+                break;
+            }
+            data.registry.drop_front();
+        }
         // if the buffer got realloced, move the results over
         if !Arc::ptr_eq(&data.buff, &self.buff) {
             let old_buff = &self.buff;
             let new_buff = &data.buff;
             for i in self.indices.iter().copied() {
+                if data.registry.get(i) == CellState::Retired {
+                    continue;
+                }
                 // since the relevant sectors on the new buffer are yet to be written
                 // we do not need to call the distructor
                 // and thus we use unsafe pointer copy (manual move)
                 unsafe {
                     std::ptr::copy_nonoverlapping(old_buff.cell_ptr(i), new_buff.cell_ptr(i), 1);
                 }
-            }
-        }
-        for i in self.indices.iter().copied() {
-            data.registry.set(i, CellState::Free);
-        }
-        let mut move_start_idx = false;
-        for i in self.retired.iter().copied() {
-            if i == data.registry.start_index {
-                move_start_idx = true;
-            }
-            data.registry.set(i, CellState::Retired);
-        }
-        if move_start_idx {
-            for i in WrappingIterU32::new(data.registry.start_index, data.registry.end_index) {
-                if data.registry.get(i) != CellState::Retired {
-                    break;
-                }
-                // Drops the cell. This frees up any vector or heap data that was referenced by the
-                // cell. Since this is linear access at the front, it should be cheap enough
-                // besides, the fact that the worker touched this means it's still likely to be on
-                // cache
-                unsafe {
-                    (*self.buff.cell_ptr(i)).assume_init_drop();
-                }
-                data.registry.drop_front();
             }
         }
         self.parent.cvar.notify_all();

@@ -1,4 +1,4 @@
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum CellState {
     Free,
     Locked,
@@ -9,7 +9,7 @@ pub enum CellState {
 impl CellState {
     fn from_bits(n: u64) -> CellState {
         // layout
-        // 0b0000...00[moved][locked]
+        // 0b0000...00xx
         let bits = n & 0b11;
         match bits {
             0 => CellState::Free,
