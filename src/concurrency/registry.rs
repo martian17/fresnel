@@ -18,44 +18,42 @@ impl CellStateRegistry {
         }
     }
     pub fn is_locked(&self, i: u32) -> bool {
-        let idx = (i.div_euclid(32) as usize) % self.buff.len();
-        let offset = i.rem_euclid(32) << 1;
-        // operator precedence: >>, &, == (highest to lowest)
-        self.buff[idx] >> offset & 1 == 1
+        let idx = ((i / 32) as usize) % self.buff.len();
+        let offset = (i % 32) << 1;
+        (self.buff[idx] >> offset) & 1 == 1
     }
     pub fn is_moved(&self, i: u32) -> bool {
-        let idx = (i.div_euclid(32) as usize) % self.buff.len();
-        let offset = i.rem_euclid(32) << 1 | 1;
-        // operator precedence: >>, &, == (highest to lowest)
-        self.buff[idx] >> offset & 1 == 1
+        let idx = ((i / 32) as usize) % self.buff.len();
+        let offset = (i % 32) << 1 | 1;
+        (self.buff[idx] >> offset) & 1 == 1
     }
     fn get(&self, i: u32) -> CellState {
-        let idx = (i.div_euclid(32) as usize) % self.buff.len();
-        let offset = i.rem_euclid(32) << 1;
+        let idx = ((i / 32) as usize) % self.buff.len();
+        let offset = (i % 32) << 1;
         let n = self.buff[idx];
         CellState {
-            locked: n >> offset & 1 == 1,
-            moved: n >> (offset | 1) & 1 == 1
+            locked: (n >> offset) & 1 == 1,
+            moved: (n >> (offset | 1)) & 1 == 1
         }
     }
     pub fn set(&mut self, i: u32, state: CellState){
-        let idx = (i.div_euclid(32) as usize) % self.buff.len();
-        let offset = i.rem_euclid(32) << 1;
+        let idx = ((i / 32) as usize) % self.buff.len();
+        let offset = (i % 32) << 1;
         let mut n = self.buff[idx];
         n &= !(0b11 << offset);
         n |= (state.locked as u64 | (state.moved as u64) << 1) << offset;
         self.buff[idx] = n;
     }
     fn lock(&mut self, i: u32){
-        let idx = (i.div_euclid(32) as usize) % self.buff.len();
-        let offset = i.rem_euclid(32) << 1;
+        let idx = ((i / 32) as usize) % self.buff.len();
+        let offset = (i % 32) << 1;
         let mut n = self.buff[idx];
         n |= 0b01 << offset;
         self.buff[idx] = n;
     }
     pub fn unlock(&mut self, i: u32){
-        let idx = (i.div_euclid(32) as usize) % self.buff.len();
-        let offset = i.rem_euclid(32) << 1;
+        let idx = ((i / 32) as usize) % self.buff.len();
+        let offset = (i % 32) << 1;
         let mut n = self.buff[idx];
         n &= !(0b01 << offset);
         self.buff[idx] = n;
@@ -70,12 +68,12 @@ impl CellStateRegistry {
             let buff_len = self.buff.len();
             // might want to use unsafe alloc in the future, if this becomes bottleneck, though unlikely
             self.buff.resize(buff_len * 2, 0);
-            let old_head_idx = self.start_index.div_euclid(32) as usize % buff_len;
-            let old_tail_idx = self.end_index.div_euclid(32) as usize % buff_len;
-            let new_head_idx = self.start_index.div_euclid(32) as usize % (buff_len * 2);
+            let old_head_idx = (self.start_index / 32) as usize % buff_len;
+            let old_tail_idx = (self.end_index / 32) as usize % buff_len;
+            let new_head_idx = (self.start_index / 32) as usize % (buff_len * 2);
             // new_tail_idx ended up not being used in the commparison, but leaving it here just for
             // the sake of completeness.
-            // let new_tail_idx = self.end_index.div_euclid(32) as usize % (buff_len * 2);
+            // let new_tail_idx = (self.end_index / 32) as usize % (buff_len * 2);
             if old_head_idx == new_head_idx {
                 // tail got unwrapped
                 // +1 just to be safe. doesn't matter if junk gets copied. the range is captured by

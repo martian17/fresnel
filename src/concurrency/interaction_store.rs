@@ -135,7 +135,7 @@ impl InteractionStore {
     }
     // states are created in batch, only by EPPS.
     // States are only merged, not created afterwards.
-    fn create_states(&mut self, n: u32) -> InteractionStoreSlice<'_> {
+    fn create_states(self: &Arc<Self>, n: u32) -> InteractionStoreSlice {
         let mut data = self.data.lock().unwrap();
         // in-line realloc, since this is the only place where states are created
         data.suggest_realloc(n);
@@ -143,16 +143,23 @@ impl InteractionStore {
         let start_idx = data.registry.end_index;
         let end_idx = data.registry.end_index.wrapping_add(n);
         for handle in WrappingIterU32::new(start_idx, end_idx) {
-            data.buff.unsafely_initialize_cell_with(handle, InteractionCell::None)
+            data.buff.unsafely_initialize_cell_with(handle, InteractionCell::None);
+        }
+        data.registry.end_index = end_idx;
+        for handle in WrappingIterU32::new(start_idx, end_idx) {
+            data.registry.set(handle, CellState{
+                locked: true,
+                moved: false,
+            });
         }
         InteractionStoreSlice{
-            parent: self,
+            parent: self.clone(),
             buff: data.buff.clone(),
             indices: WrappingIterU32::new(start_idx, end_idx).collect(),
         }
     }
 
-    fn get_states (&mut self, mut wp_batches: Vec<&mut Vec<WavePacket>>) -> InteractionStoreSlice<'_> {
+    fn get_states (self: &Arc<Self>, mut wp_batches: Vec<&mut Vec<WavePacket>>) -> InteractionStoreSlice {
         // first pass: check availability and update the moved states
         let mut data = self.cvar.wait_while(self.data.lock().unwrap(), |data| {
             for batch in wp_batches.iter_mut() {
@@ -160,11 +167,10 @@ impl InteractionStore {
                     // check if moved
                     // common case skips over this part
                     while data.registry.is_moved(wp.state_handle) {
-                        let InteractionCell::Tombstone(tombstone) = data.buff.get_mut(wp.state_handle) else {
+                        let InteractionCell::Tombstone(tombstone) = (unsafe { data.buff.get_mut(wp.state_handle) }) else {
                             panic!("InteractionStore data integrity fault: registry indicates tombstone, but found something else");
                         };
                         tombstone.ref_cnt -= 1;
-                        wp.state_handle = tombstone.move_destination;
                         if tombstone.ref_cnt == 0 {
                             // TODO: consider rewriting CellStatel to 3 state enum
                             // Free, Locked, and Moved
@@ -173,6 +179,7 @@ impl InteractionStore {
                                 moved: false,
                             });
                         }
+                        wp.state_handle = tombstone.move_destination;
                     }
                     if data.registry.is_locked(wp.state_handle) {
                         return false;
@@ -198,12 +205,18 @@ impl InteractionStore {
             }
         }
         InteractionStoreSlice{
-            parent: self,
+            parent: self.clone(),
             buff: data.buff.clone(),
             indices,
         }
     }
 }
+
+// TODO: This part requires more investigation
+// unsafe impl Send for InteractionStore {}
+// unsafe impl Sync for InteractionStore {}
+// unsafe impl Send for StatecellBuffer {}
+// unsafe impl Sync for StatecellBuffer {}
 
 
 pub struct StoreData {
@@ -224,7 +237,7 @@ impl StoreData {
         let new_buff = StatecellBuffer::new(new_capacity as usize);
         let old_buff = &self.buff;
         let mut i = self.registry.start_index;
-        while i < self.registry.end_index {
+        while i != self.registry.end_index {
             if !self.registry.is_locked(i) {
                 // since the sectors are unwitten or already freed/distructed (which is relevant to
                 // values stored in the heap by Smallvec<>, in case there was any overflow)
@@ -241,13 +254,13 @@ impl StoreData {
 }
 
 
-pub struct InteractionStoreSlice<'a>{
-    parent: &'a InteractionStore,
+pub struct InteractionStoreSlice{
+    parent: Arc<InteractionStore>,
     buff: Arc<StatecellBuffer>,
     indices: Vec<u32>,
 }
 
-impl<'a> Drop for InteractionStoreSlice<'a> {
+impl Drop for InteractionStoreSlice {
     fn drop(&mut self) {
         let mut data = self.parent.data.lock().unwrap();
         // if the buffer got realloced, move the results over
@@ -298,10 +311,12 @@ impl StatecellBuffer {
             *self.cell_ptr(handle) = MaybeUninit::new(cell);
         }
     }
-    fn get(&self, handle: u32) -> &InteractionCell {
-        unsafe{(*self.cell_ptr(handle)).assume_init_ref()}
-    }
-    fn get_mut(&self, handle: u32) -> &mut InteractionCell {
+    // unsafe fn get(&self, handle: u32) -> &InteractionCell {
+    //     unsafe{(*self.cell_ptr(handle)).assume_init_ref()}
+    // }
+    // this one can be called twice in a row accidentally
+    // marking it unsafe will make the danger more explicit
+    unsafe fn get_mut(&self, handle: u32) -> &mut InteractionCell {
         unsafe{(*self.cell_ptr(handle)).assume_init_mut()}
     }
     fn capacity(&self) -> usize {
