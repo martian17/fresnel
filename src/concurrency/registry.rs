@@ -1,6 +1,32 @@
-pub struct CellState {
-    pub locked: bool,
-    pub moved: bool,
+#[derive(PartialEq)]
+pub enum CellState {
+    Free,
+    Locked,
+    Moved,
+    Retired,
+}
+
+impl CellState {
+    fn from_bits(n: u64) -> CellState {
+        // layout
+        // 0b0000...00[moved][locked]
+        let bits = n & 0b11;
+        match bits {
+            0 => CellState::Free,
+            1 => CellState::Locked,
+            2 => CellState::Moved,
+            3 => CellState::Retired,
+            _ => unreachable!("This is alredy capped to 3 by the bitmap"),
+        }
+    }
+    fn to_bits(&self) -> u64 {
+        match self {
+            CellState::Free => 0,
+            CellState::Locked => 1,
+            CellState::Moved => 2,
+            CellState::Retired => 3,
+        }
+    }
 }
 
 pub struct CellStateRegistry {
@@ -17,45 +43,18 @@ impl CellStateRegistry {
             end_index: 0,
         }
     }
-    pub fn is_locked(&self, i: u32) -> bool {
-        let idx = ((i / 32) as usize) % self.buff.len();
-        let offset = (i % 32) << 1;
-        (self.buff[idx] >> offset) & 1 == 1
-    }
-    pub fn is_moved(&self, i: u32) -> bool {
-        let idx = ((i / 32) as usize) % self.buff.len();
-        let offset = (i % 32) << 1 | 1;
-        (self.buff[idx] >> offset) & 1 == 1
-    }
-    fn get(&self, i: u32) -> CellState {
+    pub fn get(&self, i: u32) -> CellState {
         let idx = ((i / 32) as usize) % self.buff.len();
         let offset = (i % 32) << 1;
         let n = self.buff[idx];
-        CellState {
-            locked: (n >> offset) & 1 == 1,
-            moved: (n >> (offset | 1)) & 1 == 1
-        }
+        CellState::from_bits(n>>offset)
     }
     pub fn set(&mut self, i: u32, state: CellState){
         let idx = ((i / 32) as usize) % self.buff.len();
         let offset = (i % 32) << 1;
         let mut n = self.buff[idx];
         n &= !(0b11 << offset);
-        n |= (state.locked as u64 | (state.moved as u64) << 1) << offset;
-        self.buff[idx] = n;
-    }
-    fn lock(&mut self, i: u32){
-        let idx = ((i / 32) as usize) % self.buff.len();
-        let offset = (i % 32) << 1;
-        let mut n = self.buff[idx];
-        n |= 0b01 << offset;
-        self.buff[idx] = n;
-    }
-    pub fn unlock(&mut self, i: u32){
-        let idx = ((i / 32) as usize) % self.buff.len();
-        let offset = (i % 32) << 1;
-        let mut n = self.buff[idx];
-        n &= !(0b01 << offset);
+        n |= state.to_bits() << offset;
         self.buff[idx] = n;
     }
     pub fn push_back(&mut self, state: CellState){
@@ -91,7 +90,7 @@ impl CellStateRegistry {
             self.end_index = self.end_index.wrapping_add(1);
         }
     }
-    fn drop_front(&mut self) {
+    pub fn drop_front(&mut self) {
         self.start_index = self.start_index.wrapping_add(1);
     }
     pub fn len(&self) -> u32 {

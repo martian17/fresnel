@@ -76,6 +76,24 @@ struct Tombstone{
     move_destination: u32,
 }
 
+#[derive(Clone)]
+enum WpResult {
+    Empty {
+        slot_handle: u32,
+    },
+    Success {
+        time: u64,
+        spd_id: NodeId,
+        slot_handle: u32,
+    }
+}
+
+#[derive(Clone)]
+struct CollapseResult {
+    // got some leeway, 20 packets would robably be overkill, but got 512 bytes of space
+    packets: SmallVec<[WpResult; 20]>,
+}
+
 
 // this needs to be aligned to \pmod 128
 #[derive(Clone)]
@@ -84,6 +102,8 @@ pub enum InteractionCell {
     None,
     Tombstone(Tombstone),
     IslandOfInteraction(IslandOfInteraction),
+    ComputeWip,
+    Result(CollapseResult),
 }
 
 
@@ -145,17 +165,19 @@ impl InteractionStore {
         for handle in WrappingIterU32::new(start_idx, end_idx) {
             data.buff.unsafely_initialize_cell_with(handle, InteractionCell::None);
         }
-        data.registry.end_index = end_idx;
         for handle in WrappingIterU32::new(start_idx, end_idx) {
-            data.registry.set(handle, CellState{
-                locked: true,
-                moved: false,
-            });
+            // TODO: this works, but it is kinda inefficient. Revise
+            data.registry.push_back(CellState::Free);
+        }
+        
+        for handle in WrappingIterU32::new(start_idx, end_idx) {
+            data.registry.set(handle, CellState::Locked);
         }
         InteractionStoreSlice{
             parent: self.clone(),
             buff: data.buff.clone(),
             indices: WrappingIterU32::new(start_idx, end_idx).collect(),
+            retired: Vec::new(),
         }
     }
 
@@ -166,22 +188,17 @@ impl InteractionStore {
                 for wp in batch.iter_mut() {
                     // check if moved
                     // common case skips over this part
-                    while data.registry.is_moved(wp.state_handle) {
+                    while data.registry.get(wp.state_handle) == CellState::Moved {
                         let InteractionCell::Tombstone(tombstone) = (unsafe { data.buff.get_mut(wp.state_handle) }) else {
                             panic!("InteractionStore data integrity fault: registry indicates tombstone, but found something else");
                         };
                         tombstone.ref_cnt -= 1;
                         if tombstone.ref_cnt == 0 {
-                            // TODO: consider rewriting CellStatel to 3 state enum
-                            // Free, Locked, and Moved
-                            data.registry.set(wp.state_handle, CellState{
-                                locked: false,
-                                moved: false,
-                            });
+                            data.registry.set(wp.state_handle, CellState::Retired);
                         }
                         wp.state_handle = tombstone.move_destination;
                     }
-                    if data.registry.is_locked(wp.state_handle) {
+                    if data.registry.get(wp.state_handle) == CellState::Locked {
                         return false;
                     }
                 }
@@ -198,16 +215,14 @@ impl InteractionStore {
                 }
                 previous_handle = Some(wp.state_handle);
                 indices.push(wp.state_handle);
-                data.registry.set(wp.state_handle, CellState{
-                    locked: true,
-                    moved: false,
-                });
+                data.registry.set(wp.state_handle, CellState::Locked);
             }
         }
         InteractionStoreSlice{
             parent: self.clone(),
             buff: data.buff.clone(),
             indices,
+            retired: Vec::new(),
         }
     }
 }
@@ -238,7 +253,7 @@ impl StoreData {
         let old_buff = &self.buff;
         let mut i = self.registry.start_index;
         while i != self.registry.end_index {
-            if !self.registry.is_locked(i) {
+            if self.registry.get(i) != CellState::Locked {
                 // since the sectors are unwitten or already freed/distructed (which is relevant to
                 // values stored in the heap by Smallvec<>, in case there was any overflow)
                 // we do not need to call the distructor on the old values
@@ -258,6 +273,14 @@ pub struct InteractionStoreSlice{
     parent: Arc<InteractionStore>,
     buff: Arc<StatecellBuffer>,
     indices: Vec<u32>,
+    retired: Vec<u32>,
+}
+
+impl InteractionStoreSlice {
+    fn retire(&mut self, handle: u32) {
+        self.retired.push(handle);
+    }
+    // TODO: Add some methods so the nodes can access the cells
 }
 
 impl Drop for InteractionStoreSlice {
@@ -277,7 +300,29 @@ impl Drop for InteractionStoreSlice {
             }
         }
         for i in self.indices.iter().copied() {
-            data.registry.unlock(i);
+            data.registry.set(i, CellState::Free);
+        }
+        let mut move_start_idx = false;
+        for i in self.retired.iter().copied() {
+            if i == data.registry.start_index {
+                move_start_idx = true;
+            }
+            data.registry.set(i, CellState::Retired);
+        }
+        if move_start_idx {
+            for i in WrappingIterU32::new(data.registry.start_index, data.registry.end_index) {
+                if data.registry.get(i) != CellState::Retired {
+                    break;
+                }
+                // Drops the cell. This frees up any vector or heap data that was referenced by the
+                // cell. Since this is linear access at the front, it should be cheap enough
+                // besides, the fact that the worker touched this means it's still likely to be on
+                // cache
+                unsafe {
+                    (*self.buff.cell_ptr(i)).assume_init_drop();
+                }
+                data.registry.drop_front();
+            }
         }
         self.parent.cvar.notify_all();
     }
