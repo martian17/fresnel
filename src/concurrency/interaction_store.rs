@@ -203,11 +203,12 @@ impl InteractionStore {
                     // sanity check. At this point it should not be retired
                     debug_assert!(data.registry.get(wp.state_handle) != CellState::Retired);
                     if data.registry.get(wp.state_handle) == CellState::Locked {
-                        return false;
+                        // if true, then we loop all over again
+                        return true;
                     }
                 }
             }
-            return true;
+            return false;
         }).unwrap();
         // second pass: claim the slots by locking them
         let mut indices: Vec<u32> = Vec::new();
