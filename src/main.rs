@@ -1,5 +1,6 @@
 mod nodes;
 mod concurrency;
+mod types;
 
 // use std::sync::{Mutex, Condvar, Arc};
 // use std::collections::VecDeque;

@@ -1,3 +1,2 @@
-mod registry;
-mod interaction_store;
-mod interaction_store1;
+pub mod registry;
+pub mod interaction_store;

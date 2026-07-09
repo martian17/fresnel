@@ -8,6 +8,7 @@ use crate::concurrency::registry::{
     CellStateRegistry,
 };
 use crate::nodes::core::WavePacket;
+use crate::types::core::WrappingIterU32;
 
 
 // make it 32 if it needs to support a larger optical circuit
@@ -17,7 +18,7 @@ type PortId = u8;
 
 
 #[derive(Clone)]
-enum Operator {
+pub enum Operator {
     EPPS {
         node: NodeId,
         time: u64,
@@ -63,9 +64,36 @@ enum Operator {
 // further tuning may be necessary specific to experiments
 #[derive(Clone)]
 struct IslandOfInteraction {
-    operators: SmallVec<[Operator; 13]>,
+    pub operators: SmallVec<[Operator; 13]>,
     // (wavepacket id, operator index, operator exit port identification)
+    pub active_packets: ActivePacketStore,
+    //SmallVec<[(u32, OpIndex, u8); 8]>
+}
+
+#[derive(Clone)]
+struct ActivePacketStore {
     active_packets: SmallVec<[(u32, OpIndex, u8); 8]>
+}
+
+impl ActivePacketStore {
+    pub fn extract(&mut self, packet_id: u32) -> (OpIndex, u8) {
+        let mut match_index = self.active_packets.len();
+        for i in 0..self.active_packets.len() {
+            if self.active_packets[i].0 == packet_id {
+                match_index = i;
+                break;
+            }
+        }
+        if match_index == self.active_packets.len() {
+            // TODO: Better error and semantics
+            panic!("Index not found!!");
+        }
+        let removed = self.active_packets.remove(match_index);
+        (removed.1, removed.2)
+    }
+    pub fn push(&mut self, packet_id: u32, op_index: OpIndex, port_index: u8){
+        self.active_packets.push((packet_id, op_index, port_index));
+    }
 }
 
 #[derive(Clone)]
@@ -114,40 +142,13 @@ pub struct InteractionStore{
 }
 
 
-struct WrappingIterU32 {
-    i: u32,
-    end: u32,
-}
-
-impl WrappingIterU32 {
-    fn new(start: u32, end: u32) -> Self {
-        Self {
-            i: start,
-            end,
-        }
-    }
-}
-impl std::iter::Iterator for WrappingIterU32 {
-    type Item = u32;
-    fn next(&mut self) -> Option<u32> {
-        let i = self.i;
-        if i == self.end {
-            return None
-        }
-        self.i = self.i.wrapping_add(1);
-        return Some(i);
-    }
-}
 
 
 impl InteractionStore {
     fn new() -> Self {
         let init_buff_size = 512;
         Self {
-            data: Mutex::new(StoreData {
-                registry: CellStateRegistry::new(),
-                buff: StatecellBuffer::new(init_buff_size).into(),
-            }),
+            data: Mutex::new(StoreData::with_capacity(init_buff_size)),
             // it may be better if cvar was owned by each node
             // in that case, it would get notified when nodes were added
             cvar: Condvar::new(),
@@ -155,23 +156,18 @@ impl InteractionStore {
     }
     // states are created in batch, only by EPPS.
     // States are only merged, not created afterwards.
-    fn create_states(self: &Arc<Self>, n: u32) -> InteractionStoreSlice {
+    pub fn create_states(self: &Arc<Self>, n: u32) -> InteractionStoreSlice {
         let mut data = self.data.lock().unwrap();
         // in-line realloc, since this is the only place where states are created
         data.suggest_realloc(n);
 
-        let start_idx = data.registry.end_index;
-        let end_idx = data.registry.end_index.wrapping_add(n);
+        let start_idx = data.registry.end_index();
+        let end_idx = data.registry.end_index().wrapping_add(n);
         for handle in WrappingIterU32::new(start_idx, end_idx) {
             data.buff.unsafely_initialize_cell_with(handle, InteractionCell::None);
         }
-        for handle in WrappingIterU32::new(start_idx, end_idx) {
-            // TODO: this works, but it is kinda inefficient. Revise
-            data.registry.push_back(CellState::Free);
-        }
-        
-        for handle in WrappingIterU32::new(start_idx, end_idx) {
-            data.registry.set(handle, CellState::Locked);
+        for _ in 0..n {
+            data.registry.push_back(CellState::Locked);
         }
         InteractionStoreSlice{
             parent: self.clone(),
@@ -181,7 +177,7 @@ impl InteractionStore {
         }
     }
 
-    fn get_states (self: &Arc<Self>, mut wp_batches: Vec<&mut Vec<WavePacket>>) -> InteractionStoreSlice {
+    pub fn get_states (self: &Arc<Self>, mut wp_batches: Vec<&mut Vec<WavePacket>>) -> InteractionStoreSlice {
         // first pass: check availability and update the moved states
         let mut data = self.cvar.wait_while(self.data.lock().unwrap(), |data| {
             for batch in wp_batches.iter_mut() {
@@ -236,10 +232,12 @@ impl InteractionStore {
 }
 
 // TODO: This part requires more investigation
+// unsafe impl Send for InteractionCell {}
+// unsafe impl Sync for InteractionCell {}
 // unsafe impl Send for InteractionStore {}
 // unsafe impl Sync for InteractionStore {}
-// unsafe impl Send for StatecellBuffer {}
-// unsafe impl Sync for StatecellBuffer {}
+unsafe impl Send for StatecellBuffer {}
+unsafe impl Sync for StatecellBuffer {}
 
 
 pub struct StoreData {
@@ -248,6 +246,12 @@ pub struct StoreData {
 }
 
 impl StoreData {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            registry: CellStateRegistry::with_capacity(capacity),
+            buff: StatecellBuffer::new(capacity).into(),
+        }
+    }
     fn suggest_realloc(&mut self, additional_cnt: u32) {
         let current_len = self.registry.len();
         if current_len + additional_cnt > self.buff.capacity() as u32 {
@@ -258,8 +262,8 @@ impl StoreData {
         let new_capacity = new_len.next_power_of_two();
         let new_buff = StatecellBuffer::new(new_capacity as usize);
         let old_buff = &self.buff;
-        let mut i = self.registry.start_index;
-        while i != self.registry.end_index {
+        let mut i = self.registry.start_index();
+        while i != self.registry.end_index() {
             if self.registry.get(i) != CellState::Locked {
                 // since the sectors are unwitten or already freed/distructed (which is relevant to
                 // values stored in the heap by Smallvec<>, in case there was any overflow)
@@ -272,6 +276,7 @@ impl StoreData {
             i = i.wrapping_add(1);
         }
         self.buff = new_buff.into();
+        self.registry = self.registry.resized(new_capacity as usize);
     }
 }
 
@@ -286,6 +291,11 @@ pub struct InteractionStoreSlice{
 impl InteractionStoreSlice {
     pub fn retire(&mut self, handle: u32) {
         self.retired.push(handle);
+    }
+    pub fn get_mut(&self, handle: u32) -> &mut InteractionCell {
+        unsafe {
+            self.buff.get_mut(handle)
+        }
     }
     // TODO: Add some methods so the nodes can access the cells
 }
@@ -306,8 +316,8 @@ impl Drop for InteractionStoreSlice {
                 (*self.buff.cell_ptr(i)).assume_init_drop();
             }
         }
-        for i in WrappingIterU32::new(data.registry.start_index, data.registry.end_index) {
-            if data.registry.get(i) != CellState::Retired {
+        for handle in data.registry.handles_from_front() {
+            if data.registry.get(handle) != CellState::Retired {
                 break;
             }
             data.registry.drop_front();
