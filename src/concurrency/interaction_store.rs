@@ -15,20 +15,24 @@ use crate::types::core::WrappingIterU32;
 type OpIndex = u16;
 type NodeId = u16;
 type PortId = u8;
+type ExitPortId = u8;
+type WpSnowflake = u32;
+type Time = u64;
+
 
 
 #[derive(Clone)]
 pub enum Operator {
     EPPS {
         node: NodeId,
-        time: u64,
+        time: Time,
         // todo: these could be possibly compacted to u32
-        left: (OpIndex, PortId),
-        right: (OpIndex, PortId),
+        sink_left: (OpIndex, PortId),
+        sink_right: (OpIndex, PortId),
     },
     Single {
         node: NodeId,
-        time: u64,
+        time: Time,
         sink: (OpIndex, PortId),
     },
     // These represent 2x2 linear compoents
@@ -38,7 +42,7 @@ pub enum Operator {
     // 2x2 component with interference. Photon incidence on both ports
     DualBivariate {
         node: NodeId,
-        time: u64,
+        time: Time,
         // superficial similarties of the packets
         // teporal and frequential overlap (unit inner product)
         // max is 1.0
@@ -49,15 +53,64 @@ pub enum Operator {
     // 2x2 component without interference. One port at a time
     DualUnivariate {
         node: NodeId,
-        time: u64,
+        time: Time,
         incidence_port_id: PortId,
         sink_left: (OpIndex, PortId),
         sink_right: (OpIndex, PortId),
     },
     SPD {
         node: NodeId,
-        time: u64,
+        time: Time,
     },
+}
+
+impl Operator {
+    // ExitPortId and PortId are different, since DualBivariate has 4 imaginary exit ports
+    // Target port id is assumed known
+    pub fn set_sink(&mut self, exit_port: ExitPortId, target: OpIndex) {
+        match self {
+            Operator::EPPS {sink_left, sink_right, ..} => {
+                // sink_left: (OpIndex 0, PortId),
+                // sink_right: (OpIndex 1, PortId),
+                match exit_port {
+                    0 => sink_left.0 = target,
+                    1 => sink_right.0 = target,
+                    _ => panic!("Operator::EPPS exit port out of range"),
+                }
+            },
+            Operator::Single {sink, ..} => {
+                // sink: (OpIndex 0, PortId),
+                match exit_port {
+                    0 => sink.0 = target,
+                    _ => panic!("Operator::Single exit port out of range"),
+                }
+            },
+            Operator::DualBivariate{sink_left, sink_right, ..} => {
+                // sink_left: (OpIndex, OpIndex, PortId),
+                // sink_right: (OpIndex, OpIndex, PortId),
+                match exit_port {
+                    0 => sink_left.0 = target,
+                    1 => sink_left.1 = target,
+                    2 => sink_right.0 = target,
+                    3 => sink_right.1 = target,
+                    _ => panic!("Operator::DualBivariate exit port out of range"),
+                }
+            },
+            // 2x2 component without interference. One port at a time
+            Operator::DualUnivariate {sink_left, sink_right, ..} => {
+                // sink_left: (OpIndex, PortId),
+                // sink_right: (OpIndex, PortId),
+                match exit_port {
+                    0 => sink_left.0 = target,
+                    2 => sink_right.0 = target,
+                    _ => panic!("Operator::DualUnivariate exit port out of range"),
+                }
+            },
+            Operator::SPD{..} => {
+                panic!("Operator::SPD should not have a sink port");
+            },
+        }
+    }
 }
 
 // parameter tuned to be packed in 512 bytes
@@ -71,12 +124,17 @@ struct IslandOfInteraction {
 }
 
 #[derive(Clone)]
-struct ActivePacketStore {
-    active_packets: SmallVec<[(u32, OpIndex, u8); 8]>
+pub struct ActivePacketStore {
+    active_packets: SmallVec<[(WpSnowflake, OpIndex, ExitPortId); 8]>
 }
 
 impl ActivePacketStore {
-    pub fn extract(&mut self, packet_id: u32) -> (OpIndex, u8) {
+    pub fn new() -> Self {
+        Self {
+            active_packets: SmallVec::new(),
+        }
+    }
+    pub fn extract(&mut self, packet_id: WpSnowflake) -> (OpIndex, ExitPortId) {
         let mut match_index = self.active_packets.len();
         for i in 0..self.active_packets.len() {
             if self.active_packets[i].0 == packet_id {
@@ -91,8 +149,11 @@ impl ActivePacketStore {
         let removed = self.active_packets.remove(match_index);
         (removed.1, removed.2)
     }
-    pub fn push(&mut self, packet_id: u32, op_index: OpIndex, port_index: u8){
+    pub fn push(&mut self, packet_id: WpSnowflake, op_index: OpIndex, port_index: u8){
         self.active_packets.push((packet_id, op_index, port_index));
+    }
+    pub fn is_empty(&self) -> bool {
+        self.active_packets.is_empty()
     }
 }
 
