@@ -10,14 +10,15 @@ use crate::concurrency::registry::{
 use crate::nodes::core::WavePacket;
 use crate::types::core::WrappingIterU32;
 
-
-// make it 32 if it needs to support a larger optical circuit
-type OpIndex = u16;
-type NodeId = u16;
-type PortId = u8;
-type ExitPortId = u8;
-type WpSnowflake = u32;
-type Time = u64;
+use crate::types::core::{
+    OpHandle,
+    NodeId,
+    PortId,
+    SinkModeId,
+    WpSnowflake,
+    Time,
+    SinkModeLocation,
+};
 
 
 
@@ -27,13 +28,13 @@ pub enum Operator {
         node: NodeId,
         time: Time,
         // todo: these could be possibly compacted to u32
-        sink_left: (OpIndex, PortId),
-        sink_right: (OpIndex, PortId),
+        sink_left: (OpHandle, PortId),
+        sink_right: (OpHandle, PortId),
     },
     Single {
         node: NodeId,
         time: Time,
-        sink: (OpIndex, PortId),
+        sink: (OpHandle, PortId),
     },
     // These represent 2x2 linear compoents
     // The worker thread then queries the actual Kraus oOperator and Scatter Matrix using
@@ -47,31 +48,32 @@ pub enum Operator {
         // teporal and frequential overlap (unit inner product)
         // max is 1.0
         packet_similarity: f64,
-        sink_left: (OpIndex, OpIndex, PortId),
-        sink_right: (OpIndex, OpIndex, PortId),
+        sink_left: (OpHandle, OpHandle, PortId),
+        sink_right: (OpHandle, OpHandle, PortId),
     },
     // 2x2 component without interference. One port at a time
     DualUnivariate {
         node: NodeId,
         time: Time,
         incidence_port_id: PortId,
-        sink_left: (OpIndex, PortId),
-        sink_right: (OpIndex, PortId),
+        sink_left: (OpHandle, PortId),
+        sink_right: (OpHandle, PortId),
     },
     SPD {
         node: NodeId,
         time: Time,
     },
+    Dump,
 }
 
 impl Operator {
-    // ExitPortId and PortId are different, since DualBivariate has 4 imaginary exit ports
+    // SinkModeId and PortId are different, since DualBivariate has 4 imaginary exit ports
     // Target port id is assumed known
-    pub fn set_sink(&mut self, exit_port: ExitPortId, target: OpIndex) {
+    pub fn set_sink(&mut self, exit_port: SinkModeId, target: OpHandle) {
         match self {
             Operator::EPPS {sink_left, sink_right, ..} => {
-                // sink_left: (OpIndex 0, PortId),
-                // sink_right: (OpIndex 1, PortId),
+                // sink_left: (OpHandle 0, PortId),
+                // sink_right: (OpHandle 1, PortId),
                 match exit_port {
                     0 => sink_left.0 = target,
                     1 => sink_right.0 = target,
@@ -79,15 +81,15 @@ impl Operator {
                 }
             },
             Operator::Single {sink, ..} => {
-                // sink: (OpIndex 0, PortId),
+                // sink: (OpHandle 0, PortId),
                 match exit_port {
                     0 => sink.0 = target,
                     _ => panic!("Operator::Single exit port out of range"),
                 }
             },
             Operator::DualBivariate{sink_left, sink_right, ..} => {
-                // sink_left: (OpIndex, OpIndex, PortId),
-                // sink_right: (OpIndex, OpIndex, PortId),
+                // sink_left: (OpHandle, OpHandle, PortId),
+                // sink_right: (OpHandle, OpHandle, PortId),
                 match exit_port {
                     0 => sink_left.0 = target,
                     1 => sink_left.1 = target,
@@ -98,8 +100,8 @@ impl Operator {
             },
             // 2x2 component without interference. One port at a time
             Operator::DualUnivariate {sink_left, sink_right, ..} => {
-                // sink_left: (OpIndex, PortId),
-                // sink_right: (OpIndex, PortId),
+                // sink_left: (OpHandle, PortId),
+                // sink_right: (OpHandle, PortId),
                 match exit_port {
                     0 => sink_left.0 = target,
                     2 => sink_right.0 = target,
@@ -108,6 +110,9 @@ impl Operator {
             },
             Operator::SPD{..} => {
                 panic!("Operator::SPD should not have a sink port");
+            },
+            Operator::Dump => {
+                panic!("Operator::Dump should not have a sink port");
             },
         }
     }
@@ -120,12 +125,26 @@ struct IslandOfInteraction {
     pub operators: SmallVec<[Operator; 13]>,
     // (wavepacket id, operator index, operator exit port identification)
     pub active_packets: ActivePacketStore,
-    //SmallVec<[(u32, OpIndex, u8); 8]>
+    //SmallVec<[(u32, OpHandle, u8); 8]>
+}
+
+// if active packets becomes 0, we dispatch 
+
+
+impl IslandOfInteraction {
+    pub fn set_sink(&mut self, sink_mode: SinkModeLocation, op_handle: OpHandle) {
+        self.operators[sink_mode.operator as usize].set_sink(sink_mode.mode, op_handle);
+    }
+    pub fn add_operator(&mut self, operator: Operator) -> OpHandle {
+        let len = self.operators.len();
+        self.operators.push(operator);
+        len as OpHandle
+    }
 }
 
 #[derive(Clone)]
 pub struct ActivePacketStore {
-    active_packets: SmallVec<[(WpSnowflake, OpIndex, ExitPortId); 8]>
+    active_packets: SmallVec<[(WpSnowflake, SinkModeLocation); 8]>
 }
 
 impl ActivePacketStore {
@@ -134,7 +153,7 @@ impl ActivePacketStore {
             active_packets: SmallVec::new(),
         }
     }
-    pub fn extract(&mut self, packet_id: WpSnowflake) -> (OpIndex, ExitPortId) {
+    pub fn extract(&mut self, packet_id: WpSnowflake) -> SinkModeLocation {
         let mut match_index = self.active_packets.len();
         for i in 0..self.active_packets.len() {
             if self.active_packets[i].0 == packet_id {
@@ -147,10 +166,10 @@ impl ActivePacketStore {
             panic!("Index not found!!");
         }
         let removed = self.active_packets.remove(match_index);
-        (removed.1, removed.2)
+        removed.1
     }
-    pub fn push(&mut self, packet_id: WpSnowflake, op_index: OpIndex, port_index: u8){
-        self.active_packets.push((packet_id, op_index, port_index));
+    pub fn push(&mut self, packet_id: WpSnowflake, sink_mode: SinkModeLocation){
+        self.active_packets.push((packet_id, sink_mode));
     }
     pub fn is_empty(&self) -> bool {
         self.active_packets.is_empty()

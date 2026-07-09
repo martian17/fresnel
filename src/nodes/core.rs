@@ -1,4 +1,10 @@
-use std::sync::mpsc::{Receiver, SyncSender, SendError};
+use std::sync::mpsc::{Receiver, SyncSender, Sender, SendError};
+use std::cmp::Ordering;
+
+use crate::types::core::{
+    PortAddress,
+    Time,
+};
 
 pub struct WavePacket {
     pub time: u64,// ps
@@ -86,20 +92,19 @@ impl RxPort{
     // application of the same scattering operator. This preserves
     // the temporal mode of each wave packets at exit ports,
     // regardless of the port counts.
-    pub fn get_batch(&mut self, constraint: BatchConstraint) -> Vec<WavePacket> {
+    pub fn get_batch(&mut self, constraint: BatchConstraint) -> WpBatch {
         let mut batch: Vec<WavePacket> = Vec::new();
+        let start_time = self.current_time;
         while batch.len() < constraint.max_size {
             if let Some(wp_ref) = self.current_period.peek() {
                 if wp_ref.start_time() > constraint.timeout {
-                    self.current_time = wp_ref.start_time();
-                    return batch;
+                    break;
                 }
                 let wp = self.current_period.next().unwrap();
                 batch.push(wp);
             } else if constraint.timeout < self.period_end {
                 // be as lazy as possible in terms of getting the next packet
-                self.current_time = self.period_end;
-                return batch;
+                break;
             } else {
                 self.recv();
             }
@@ -110,7 +115,8 @@ impl RxPort{
         } else {
             self.current_time = self.period_end;
         }
-        return batch;
+        let end_time = self.current_time;
+        return WpBatch { batch, start_time, end_time };
     }
     // Handles boundary condition for multi-port components
     pub fn get_overlapping_or_before(&mut self, reference_time: u64) -> Option<WavePacket> {
@@ -140,6 +146,42 @@ impl RxPort{
 }
 
 
+pub enum ControlEventType {
+    ConnectSink{
+        sink_tx: TxPort,
+        address: PortAddress,
+    },
+}
+
+// #[derive(Eq, PartialEq)]
+pub struct ControlEvent {
+    pub time: Time,
+    pub event_type: ControlEventType,
+}
+
+impl PartialEq for ControlEvent {
+    fn eq(&self, other: &Self) -> bool {
+        self.time == other.time
+    }
+}
+
+impl Eq for ControlEvent {}
+
+impl Ord for ControlEvent {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Reverse the standard comparison to create a min-heap
+        other.time.cmp(&self.time) 
+    }
+}
+
+impl PartialOrd for ControlEvent {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+
 pub struct WorkerHandle {
     pub ports: Vec<TxPort>,
+    pub control: Sender<ControlEvent>,
 }
