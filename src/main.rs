@@ -2,6 +2,43 @@ mod nodes;
 mod concurrency;
 mod types;
 
+use crate::concurrency::interaction_store::InteractionStore;
+
+use std::sync::{Arc};
+
+
+// TODO: multi threaded store to get the operators (Original density matrix from EPPS, Kraus and S-Matrix)
+// store.get(NodeId).
+// loop through the past changes in the operators, find the latest one
+// no garbage collection implemented, meaning operator changes will be stored indefinitely
+// we should look into having them implemented based on the global clock (best effort latest item
+// count up)
+
+
+struct DualPortOperatorStore {
+    // the thread should access one of these operators at a time, so I'm trying to think of what's
+    // teh right way to lock this
+    Vec<DualPortOperatorProvider>,
+}
+
+// We use SoA pattern
+struct QuantumOperatorContext {
+    dual_port: DualPortOperatorStore,
+    single_port: SinglePortOperatorStore,
+    spd: SPDOperatorStore,
+    epps: EPPSOPeratorStore,
+}
+
+struct SimulationContext {
+    interaction_store: Arc<InteractionStore>,
+    quantum_operator_context: QuantumOperatorContext,
+}
+
+fn main() {
+    let interaction_store = Arc::new(InteractionStore::new());
+
+}
+
 // use std::sync::{Mutex, Condvar, Arc};
 // use std::collections::VecDeque;
 // use std::rc::{Rc};

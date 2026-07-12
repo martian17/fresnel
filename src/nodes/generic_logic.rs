@@ -151,47 +151,54 @@ trait NodeHandle: Sized {
     }
 }
 
-struct WorkerContext {
+struct SimulationContext {
     interaction_store: InteractionStore,
 }
 
-struct NodeRunner<T: NodeWorker> {
+struct RunnerState<T: NodeWorker> {
     rx_ports: Vec<RxPort>,
     control_rx: Receiver<TimedControlEvent<T::CustomControlEvent>>,
     control_event_queue: BinaryHeap<TimedControlEvent<T::CustomControlEvent>>,
     time: Time,
+}
+
+impl<T: NodeWorker> RunnerState<T> {
+    fn ctx<'a>(&'a mut self, global: &'a Arc<SimulationContext>) -> RunnerContext<'a, T> {
+        RunnerContext {
+            runner: self,
+            global,
+        }
+    }
+}
+
+struct NodeRunner<T: NodeWorker> {
+    state: RunnerState<T>,
     worker: T,
 }
 
 
 
-trait NodeWorker: Send {
+trait NodeWorker: Send + Sized {
     type CustomControlEvent: Send;
     type NodeTemplate;
     type NodeHandle: NodeHandle<CustomControlEvent = Self::CustomControlEvent, NodeTemplate = Self::NodeTemplate>;
 
     fn new(template: &Self::NodeTemplate) -> Self;
-    fn handle_connection(&mut self, ctx: RunnerContext<Self::CustomControlEvent>, exit_port_id: PortId, tx_port: TxPort);
-    fn handle_custom_event(&mut self, ctx: RunnerContext<Self::CustomControlEvent>, custom_event: Self::CustomControlEvent);
-    fn process_batch(&mut self, ctx: RunnerContext<Self::CustomControlEvent>);
+    fn handle_connection(&mut self, ctx: RunnerContext<Self>, exit_port_id: PortId, tx_port: TxPort);
+    fn handle_custom_event(&mut self, ctx: RunnerContext<Self>, custom_event: Self::CustomControlEvent);
+    fn process_batch(&mut self, ctx: RunnerContext<Self>);
 
 }
 
-struct RunnerState<'a, CustomControlEvent> {
-    rx_ports: &'a mut Vec<RxPort>,
-    control_rx: &'a mut Receiver<TimedControlEvent<CustomControlEvent>>,
-    control_event_queue: &'a mut BinaryHeap<TimedControlEvent<CustomControlEvent>>,
-    time: &'a mut Time,
-}
 
-struct RunnerContext<'a, CustomControlEvent>{
-    runner: RunnerState<'a, CustomControlEvent>,
-    global: Arc<WorkerContext>,
+struct RunnerContext<'a, T: NodeWorker>{
+    runner: &'a mut RunnerState<T>,
+    global: &'a Arc<SimulationContext>,
 }
 
 
 impl<T: NodeWorker + 'static> NodeRunner<T> {
-    fn spawn(ctx: Arc<WorkerContext>, rx_port_count: usize, template: T::NodeTemplate) -> T::NodeHandle {
+    fn spawn(ctx: Arc<SimulationContext>, rx_port_count: usize, template: T::NodeTemplate) -> T::NodeHandle {
         let (tx_ports, rx_ports): (Vec<_>, Vec<_>) = (0..rx_port_count).map(|_| {
             let (tx_raw, rx_raw) = sync_channel::<WpBatch>(3);
             let tx = TxPort {
@@ -211,10 +218,12 @@ impl<T: NodeWorker + 'static> NodeRunner<T> {
         let (control_tx, control_rx) = channel::<TimedControlEvent<T::CustomControlEvent>>();
 
         let mut runner = Self {
-            rx_ports,
-            control_rx,
-            control_event_queue: BinaryHeap::new(),
-            time: 0,
+            state: RunnerState{
+                rx_ports,
+                control_rx,
+                control_event_queue: BinaryHeap::new(),
+                time: 0,
+            },
             worker: T::new(&template),
         };
         let handle = thread::spawn(move || {
@@ -224,36 +233,28 @@ impl<T: NodeWorker + 'static> NodeRunner<T> {
     }
     fn preload_control_events(&mut self){
         loop {
-            let evt = self.control_rx.recv().unwrap();
+            let evt = self.state.control_rx.recv().unwrap();
 
             match evt.event {
                 NodeControlEvent::Start => {
-                    self.time = evt.time;
+                    self.state.time = evt.time;
+                    break;
                 },
                 _ => {
-                    self.control_event_queue.push(evt);
+                    self.state.control_event_queue.push(evt);
                 }
             }
         }
     }
-    fn run(&mut self, ctx: Arc<WorkerContext>){
+    fn run(&mut self, ctx: Arc<SimulationContext>){
         self.preload_control_events();
         loop {
-            while let Ok(evt) = self.control_rx.try_recv() {
-                self.control_event_queue.push(evt);
+            while let Ok(evt) = self.state.control_rx.try_recv() {
+                self.state.control_event_queue.push(evt);
             }
-            while self.control_event_queue.peek().is_some_and(|evt|evt.time <= self.time) {
+            while self.state.control_event_queue.peek().is_some_and(|evt|evt.time <= self.state.time) {
                 // pop_if is nightly, so we use a less rusty alternative with unwrap()
-                let evt = self.control_event_queue.pop().unwrap();
-                let runner_context = RunnerContext {
-                    runner: RunnerState{
-                        rx_ports: &mut self.rx_ports,
-                        control_rx: &mut self.control_rx,
-                        control_event_queue: &mut self.control_event_queue,
-                        time: &mut self.time,
-                    },
-                    global: ctx.clone(),
-                };
+                let evt = self.state.control_event_queue.pop().unwrap();
                 match evt.event {
                     NodeControlEvent::Start => {
                         panic!("double start is currently not supported");
@@ -263,131 +264,15 @@ impl<T: NodeWorker + 'static> NodeRunner<T> {
                         return;
                     },
                     NodeControlEvent::Connect{exit_port_id, tx_port} => {
-                        self.worker.handle_connection(runner_context, exit_port_id, tx_port);
+                        self.worker.handle_connection(self.state.ctx(&ctx), exit_port_id, tx_port);
                     },
                     NodeControlEvent::Custom(custom_event) => {
-                        self.worker.handle_custom_event(runner_context, custom_event);
+                        self.worker.handle_custom_event(self.state.ctx(&ctx), custom_event);
                     }
                 }
-                let runner_context = RunnerContext {
-                    runner: RunnerState{
-                        rx_ports: &mut self.rx_ports,
-                        control_rx: &mut self.control_rx,
-                        control_event_queue: &mut self.control_event_queue,
-                        time: &mut self.time,
-                    },
-                    global: ctx.clone(),
-                };
-                self.worker.process_batch(runner_context);
+                self.worker.process_batch(self.state.ctx(&ctx));
             }
         }
 
     }
 }
-
-
-
-// trait NodeWorker {
-//     type CustomControlEvent;
-//     type WorkerTemplate;
-// 
-//     // user defined methods
-//     fn build(ctx: Arc<WorkerContext>, template: Self::WorkerTemplate) -> NodeWorker;
-//     fn build_handle(&self, join_handle: std::thread::JoinHandle<()>) -> NodeHandle;
-//     fn handle_connection(&mut self, exit_port_id: PortId, tx_port: TxPort);
-//     fn handle_custom_event(&mut self, custom_event: Self::CustomControlEvent);
-//     // mandatory iterm getters/setters
-//     fn get_rx_ports(&self) -> &Vec<RxPort>;
-//     fn get_control_channel(&self) -> &Receiver<TimedControlEvent<Self::CustomControlEvent>>;
-//     fn get_control_event_queue(&self) -> &mut BinaryHeap<TimedControlEvent<Self::CustomControlEvent>>;
-//     fn set_time(&self, time: Time);
-//     fn get_time(&self) -> Time;
-// 
-// 
-// 
-//     // derived methods
-//     fn spawn(ctx: Arc<WorkerContext>, template: Self::WorkerTemplate) -> Self {
-//         let worker = Self::build(ctx, template);
-//         let join_handle = thread::spawn(move || {
-//             worker.run();
-//         });
-//         worker.build_handle()
-//     }
-// 
-//     fn run(&mut self){
-//         self.preload_control_events();
-//         loop {
-//             while let Ok(evt) = self.get_control_channel().try_recv() {
-//                 self.get_control_event_queue().push(evt);
-//             }
-//             while self.get_control_event_queue().peek().is_some_and(|evt|evt.time <= self.get_time()) {
-//                 // pop_if is nightly, so we use a less rusty alternative with unwrap()
-//                 let evt = self.get_control_event_queue().pop().unwrap();
-//                 match evt.event {
-//                     NodeControlEvent::Start => {
-//                         panic!("double start is currently not supported");
-//                     },
-//                     NodeControlEvent::Stop => {
-//                         // let the thread join
-//                         return;
-//                     },
-//                     NodeControlEvent::Connect{exit_port_id, tx_port} => {
-//                         self.handle_connection(exit_port_id, tx_port);
-//                     },
-//                     NodeControlEvent::Custom(custom_event) => {
-//                         self.handle_custom_event(custom_event);
-//                     }
-//                 }
-//                 self.process_batch();
-//             }
-//         }
-// 
-// 
-//     }
-//     
-// 
-//     fn preload_control_events(&mut self){
-//         loop {
-//             let evt = self.get_control_channel().recv().unwrap();
-// 
-//             match evt.event {
-//                 NodeControlEvent::Start => {
-//                     self.set_time(evt.time);
-// 
-//                 },
-//                 _ => {
-//                     self.get_control_event_queue().push(evt);
-//                 }
-//             }
-//         }
-//     }
-// }
-// 
-// 
-// 
-// 
-// enum SinglePortEvent {
-//     SetDelay(u64),
-// }
-// 
-// 
-// struct SinglePortWorkerHandle {
-//     pub ports: Vec<TxPort>,
-//     pub control: Sender<ControlEvent>
-// }
-// 
-// impl DefaultControl for SinglePortWorkerHandle {
-//     fn get_ports(&self) -> &Vec<TxPort> {
-//         self.ports
-//     }
-//     
-//     fn get_control(&self) -> 
-//     fn get_port(&self, port_id: PortId) -> TxPort {
-//         self.ports
-//     }
-//     fn get_ports() {
-// 
-//     }
-// }
-// 
-// 

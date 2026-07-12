@@ -6,6 +6,7 @@ use crate::types::core::{
     Time,
 };
 
+#[derive(Clone)]
 pub struct WavePacket {
     pub time: u64,// ps
     pub time_spread: u32,// ps, three sigma
@@ -34,13 +35,14 @@ impl WavePacket {
     }
 }
 
+#[derive(Clone)]
 pub struct WpBatch {
     pub start_time: u64,
     pub end_time: u64,
     pub batch: Vec<WavePacket>,
 }
 
-
+#[derive(Clone)]
 pub struct TxPort {
     pub time: u64,
     pub tx: SyncSender<WpBatch>,
@@ -154,34 +156,42 @@ pub enum ControlEventType {
 }
 
 // #[derive(Eq, PartialEq)]
-pub struct ControlEvent {
+pub struct ControlEvent<T> {
     pub time: Time,
-    pub event_type: ControlEventType,
+    pub event_type: T,
 }
 
-impl PartialEq for ControlEvent {
+impl <T>PartialEq for ControlEvent<T> {
     fn eq(&self, other: &Self) -> bool {
         self.time == other.time
     }
 }
 
-impl Eq for ControlEvent {}
+impl <T>Eq for ControlEvent<T> {}
 
-impl Ord for ControlEvent {
+impl <T>Ord for ControlEvent<T> {
     fn cmp(&self, other: &Self) -> Ordering {
         // Reverse the standard comparison to create a min-heap
         other.time.cmp(&self.time) 
     }
 }
 
-impl PartialOrd for ControlEvent {
+impl <T>PartialOrd for ControlEvent<T> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-
-pub struct WorkerHandle {
-    pub ports: Vec<TxPort>,
-    pub control: Sender<ControlEvent>,
+pub struct Connection{
+    pub sink_tx: TxPort,
+    pub address: PortAddress,
 }
+
+
+// pub struct WorkerHandle {
+//     pub ports: Vec<TxPort>,
+//     pub control: Sender<ControlEvent>,
+// }
+
+
+

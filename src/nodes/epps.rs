@@ -1,4 +1,3 @@
-#![allow(unused_imports)]
 use std::sync::mpsc::{sync_channel, channel, Sender, Receiver, SyncSender, SendError, RecvError};
 use std::sync::{Mutex, Condvar, Arc};
 use std::thread;
@@ -8,9 +7,9 @@ use crate::nodes::core::{
     WavePacket,
     WpBatch,
     TxPort,
+    Connection,
     RxPort,
     // WorkerHandle,
-    Connection,
     BatchConstraint,
     ControlEvent,
     ControlEventType,
@@ -27,83 +26,167 @@ use crate::types::core::{
 };
 
 
-enum SinglePortControlEventType {
-    // Common
+pub enum EPPSPort{
+    Signal,
+    Idler,
+}
+
+
+
+enum EPPSControlEventType {
+    // Common events
     Start,
     Shutdown,
 
-    // Node specific
-    ConnectSink(Connection),
-    SetDelay(u64),
+    // Node specific events
+    Connect {
+        port: EPPSPort,
+        conn: Connection,
+    },
+    SetWaveProfile {
+        port: EPPSPort,
+        profile: WaveProfile,
+    },
+    SetPumpFrequency(f64),
 }
 
-type SinglePortControlEvent = ControlEvent<SinglePortControlEventType>
+type EPPSControlEvent = ControlEvent<EPPSControlEventType>;
+
+
+
+struct EPPSWorkerHandle {
+    // no optical reception ports, just controls
+    pub control: Sender<EPPSControlEvent>,
+}
+
+
+// TODO: Shove some of these in a trait
+impl EPPSWorkerHandle {
+    fn start(&mut self, time: Time) {
+        self.control.send(EPPSControlEvent{
+            time,
+            event_type: EPPSControlEventType::Start,
+        });
+    }
+    fn shutdown(&mut self, time: Time) {
+        self.control.send(EPPSControlEvent{
+            time,
+            event_type: EPPSControlEventType::Shutdown,
+        });
+    }
+
+    fn connect_signal(&self, conn: Connection) {
+        self.control.send(EPPSControlEvent{
+            time: 0,
+            event_type: EPPSControlEventType::Connect {
+                port: EPPSPort::Signal,
+                conn,
+            }
+        });
+    }
+    fn connect_idler(&self, conn: Connection) {
+        self.control.send(EPPSControlEvent{
+            time: 0,
+            event_type: EPPSControlEventType::Connect {
+                port: EPPSPort::Idler,
+                conn,
+            }
+        });
+    }
+
+    fn set_signal_wave_profile(&self, profile: WaveProfile, time: Time) {
+        self.control.send(EPPSControlEvent{
+            time,
+            event_type: EPPSControlEventType::SetWaveProfile {
+                port: EPPSPort::Signal,
+                profile,
+            }
+        });
+    }
+    fn set_idler_wave_profile(&self, profile: WaveProfile, time: Time) {
+        self.control.send(EPPSControlEvent{
+            time,
+            event_type: EPPSControlEventType::SetWaveProfile {
+                port: EPPSPort::Idler,
+                profile,
+            }
+        });
+    }
+
+    fn set_pump_frequency(&self, frequency: f64, time: Time) {
+        self.control.send(EPPSControlEvent{
+            time,
+            event_type: EPPSControlEventType::SetPumpFrequency(frequency),
+        });
+    }
+
+}
+
+
+
+struct WaveProfile{
+    time_sigma: u32,
+    wavelength: f32,
+    wavelength_sigma: f32,
+}
+
+struct EPPSTemplate {
+    signal_profile: WaveProfile,
+    idler_profile: WaveProfile,
+    pump_frequency: f64,
+}
 
 
 // models 
-struct SinglePortWorker {
-
-    port: RxPort,
+struct EPPSWorker {
+    // properties needed by every node worker
     batch_period: u64,
     batch_size: usize,
     id: u16,
     time: Time,
     store: Arc<InteractionStore>,
-    sink: Option<(PortAddress, TxPort)>,
-    control_channel: Receiver<SinglePortControlEvent>,
-    control_event_queue: BinaryHeap<SinglePortControlEvent>,
-    // jones matrix
-    // but extended as kraus operators
+    control_channel: Receiver<EPPSControlEvent>,
+    control_event_queue: BinaryHeap<EPPSControlEvent>,
 
-    // max u32 picosecond time corresponds to 4ms, which is about 1200km in vacuum distance
-    // which is still not out of the realm of possibility, especially with satellite based
-    // communication, so we still use u64 here
-    time_delay: u64,
-}
+    // shape specific
+    signal_sink: Option<(PortAddress, TxPort)>,
+    idler_sink: Option<(PortAddress, TxPort)>,
 
-pub struct SinglePortWorkerHandle {
-    pub ports: Vec<TxPort>,
-    pub control: Sender<SinglePortControlEvent>,
+    signal_profile: WaveProfile,
+    idler_profile: WaveProfile,
+
+    pump_frequency: f64,
 }
 
 
-impl SinglePortWorker {
-    pub fn spawn(store: Arc<InteractionStore>, id: u16, time_delay: u64) -> SinglePortWorkerHandle {
-        let (tx_raw, rx_raw) = sync_channel::<WpBatch>(3);
-        let (control_tx, control_rx) = channel::<SinglePortControlEvent>();
-        let tx = TxPort {
-            time: 0,
-            tx: tx_raw,
-        };
-        let rx = RxPort {
-            period_start: 0,
-            period_end: 0,
-            rx: rx_raw,
-            // set the empty iterator
-            current_period: Vec::new().into_iter().peekable(),
-            current_time: 0,
-        };
+impl EPPSWorker {
+    pub fn spawn(
+        store: Arc<InteractionStore>,
+        id: u16,
+        template: EPPSTemplate,
+    ) -> EPPSWorkerHandle {
+        let (control_tx, control_rx) = channel::<EPPSControlEvent>();
         let mut worker = Self {
-            port: rx,
-            // 20 us gives us approx. 200 wave packets
-            // hardcode this as picoseconds for now
-            // this represents about 6.4kb of memory vs L1 cache which is
-            // generally around 32 to 100kb
             batch_period: 20_000_000,
             batch_size: 200,
             id,
             time: 0,
             store,
-            sink: None,
             control_channel: control_rx,
             control_event_queue: BinaryHeap::new(),
-            time_delay,
+
+            signal_sink: None,
+            idler_sink: None,
+
+            signal_profile: template.signal_profile,
+            idler_profile: template.idler_profile,
+
+            pump_frequency: template.pump_frequency,
         };
         thread::spawn(move ||{
             worker.run();
         });
-        SinglePortWorkerHandle {
-            ports: vec![tx],
+        EPPSWorkerHandle {
             control: control_tx,
         }
     }
@@ -115,33 +198,13 @@ impl SinglePortWorker {
             // pop_if is nightly, so we use a less rusty alternative with unwrap()
             let evt = self.control_event_queue.pop().unwrap();
             match evt.event_type {
-                SinglePortControlEventType::ConnectSink(conn) => {
-                    self.sink = Some((conn.address, conn.sink_tx));
-                },
-                SinglePortControlEventType::Start => {
-                    panic!("A node can only be started once");
-                },
-                SinglePortControlEventType::Shutdown => {
-
-},
-                SinglePortControlEventType::SetDelay(u64),
+                ControlEventType::ConnectSink {sink_tx, address} => {
+                    self.sink = Some((address, sink_tx));
+                }
             }
         }
     }
     fn run(&mut self) {
-        // pre-start directive
-        loop {
-            let evt = self.control_channel.recv().unwrap();
-            match evt.event_type {
-                SinglePortControlEventType::Start => {
-                    self.time = evt.time;
-                    break;
-                },
-                _ => {
-                    self.control_event_queue.push(evt);
-                },
-            }
-        }
         loop {
             self.handle_control_event();
             // since it's a single port, no need to worry about boundary condition
