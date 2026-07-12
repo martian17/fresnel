@@ -13,6 +13,8 @@ arrow = "58.3.0"
 chrono = "0.4.44"
 parquet = "58.3.0"
 serde = { version = "1.0.219", features = ["derive"] }
+arc-swap = { version = "1.9.2" }
+boxcar = { version = "0.2.14" }
 
 [features]
 default = ["FSDM"]

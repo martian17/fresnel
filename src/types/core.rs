@@ -43,3 +43,22 @@ pub struct SinkModeLocation {
     pub operator: OpHandle,
     pub mode: SinkModeId,
 }
+
+pub struct BatchConstraint {
+    pub timeout: u64, // picoseconds
+    pub max_size: usize,
+}
+
+pub struct BatchPolicy{
+    pub period: u64,// picoseconds
+    pub max_size: usize,
+}
+
+impl BatchPolicy {
+    pub fn get_constraint(&self, start_time: Time) -> BatchConstraint {
+        BatchConstraint {
+            timeout: start_time + self.period,
+            max_size: self.max_size,
+        }
+    }
+}

@@ -257,6 +257,7 @@ impl InteractionStore {
         }
     }
 
+    // pub fn get_states (self: &Arc<Self>, mut wp_batches: Vec<&mut Vec<WavePacket>>) -> InteractionStoreSlice {
     pub fn get_states (self: &Arc<Self>, mut wp_batches: Vec<&mut Vec<WavePacket>>) -> InteractionStoreSlice {
         // first pass: check availability and update the moved states
         let mut data = self.cvar.wait_while(self.data.lock().unwrap(), |data| {
