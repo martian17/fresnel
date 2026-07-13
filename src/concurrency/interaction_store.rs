@@ -71,12 +71,12 @@ impl Operator {
     // Target port id is assumed known
     pub fn set_sink(&mut self, exit_port: SinkModeId, target: OpHandle) {
         match self {
-            Operator::EPPS {sink_left, sink_right, ..} => {
-                // sink_left: (OpHandle 0, PortId),
-                // sink_right: (OpHandle 1, PortId),
+            Operator::EPPS {sink_signal, sink_idler, ..} => {
+                // sink_signal: (OpHandle 0, PortId),
+                // sink_idler: (OpHandle 1, PortId),
                 match exit_port {
-                    0 => sink_left.0 = target,
-                    1 => sink_right.0 = target,
+                    0 => sink_signal.0 = target,
+                    1 => sink_idler.0 = target,
                     _ => panic!("Operator::EPPS exit port out of range"),
                 }
             },

@@ -25,6 +25,7 @@ use crate::concurrency::interaction_store::{
     Operator,
 };
 use crate::concurrency::context::SimulationContext;
+use crate::concurrency::snowflake;
 
 use crate::types::core::{
     PortAddress,
@@ -32,6 +33,7 @@ use crate::types::core::{
     NodeId,
     PortId,
     BatchConstraint,
+    SinkModeLocation,
 };
 use crate::types::physics::{
     PhotonicKrausOperators,
@@ -87,8 +89,9 @@ impl NodeWorker for SinglePortWorker {
         let mut batch = port.get_batch(batch_policy.get_constraint(port.current_time));
 
         let slice = ctx.global.interaction_store.get_states(vec![&mut batch.batch]);
-        let sink_batch: Vec<WavePacket> = Vec::new();
+        let mut sink_batch: Vec<WavePacket> = Vec::new();
         for wp in batch.batch {
+            ctx.runner.time = wp.time;
             let state = match slice.get_mut(wp.state_handle) {
                 InteractionCell::IslandOfInteraction(state) => state,
                 _cell => {
@@ -104,6 +107,23 @@ impl NodeWorker for SinglePortWorker {
                 sink: (0, 0),
             });
             state.set_sink(sink_mode, op_handle);
+            let sink_packet_snowflake = snowflake::next_u32();
+            sink_batch.push(WavePacket{
+                time: wp.time + self.delay,
+                // TODO: Consider adding dispersion, and start thinking about
+                // how to model chromatic abberation
+                time_sigma: wp.time_sigma,
+                wavelength: wp.wavelength,
+                wavelength_sigma: wp.wavelength_sigma,
+                state_handle: wp.state_handle,
+                snowflake: sink_packet_snowflake,
+            });
+            state.active_packets.push(sink_packet_snowflake, SinkModeLocation{
+                operator: op_handle,
+                // single port only has single exit mode
+                // and therefore mode index is always 0
+                mode: 0,
+            });
         }
 
         if let Some(port) = &mut self.sink {

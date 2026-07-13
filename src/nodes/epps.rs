@@ -38,6 +38,7 @@ use crate::types::core::{
     NodeId,
     PortId,
     BatchConstraint,
+    SinkModeLocation,
 };
 use crate::types::physics::{
     PhotonicKrausOperators,
@@ -158,7 +159,7 @@ impl NodeWorker for EPPSWorker {
         while ctx.runner.time <= batch_constraint.timeout && pairs.len() < batch_constraint.max_size {
             let bin_count = get_next_time_bin_count(self.success_probability);
             let dt = self.time_frac + self.pump_period * bin_count as f64;
-            ctx.runner.time = dt.floor() as u64;
+            ctx.runner.time += dt.floor() as u64;
             self.time_frac = dt.rem_euclid(1.0);
             pairs.push((
                 self.signal_profile.new_wave_packet(ctx.runner.time),
@@ -176,13 +177,22 @@ impl NodeWorker for EPPSWorker {
             signal.state_handle = handle;
             idler.state_handle = handle;
             let mut island = IslandOfInteraction::new();
-            let _op_handle = island.add_operator(Operator::EPPS{
+            let op_handle = island.add_operator(Operator::EPPS{
                 node: self.seq,
                 time: signal.time,
                 // will be overwritten by the next operator
                 sink_signal: (0, 0),
                 sink_idler: (0, 0),
             });
+            island.active_packets.push(signal.snowflake, SinkModeLocation{
+                operator: op_handle,
+                mode: 0,
+            });
+            island.active_packets.push(idler.snowflake, SinkModeLocation{
+                operator: op_handle,
+                mode: 1,
+            });
+
             slice.set(handle, InteractionCell::IslandOfInteraction(island));
             signal_packets.push(signal);
             idler_packets.push(idler);

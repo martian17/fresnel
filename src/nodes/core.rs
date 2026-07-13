@@ -397,8 +397,8 @@ impl<T: NodeWorker + 'static> NodeRunner<T> {
                         self.worker.handle_custom_event(self.state.ctx(&ctx), custom_event);
                     }
                 }
-                self.worker.process_batch(self.state.ctx(&ctx));
             }
+            self.worker.process_batch(self.state.ctx(&ctx));
         }
 
     }
