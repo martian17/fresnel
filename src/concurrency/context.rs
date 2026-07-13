@@ -4,6 +4,7 @@ use nalgebra::{SMatrix, Complex};
 use arc_swap::{ArcSwap, Guard};
 use std::sync::Arc;
 
+// config and OpStore are stored under this file, 
 
 use crate::concurrency::interaction_store::{
     InteractionStore,
@@ -12,6 +13,7 @@ use crate::types::core::{
     Time,
     BatchPolicy,
 };
+use crate::types::physics::PhotonicKrausOperators;
 
 
 
@@ -44,7 +46,7 @@ impl<T> OpStore<T> {
         self.items.push(ArcSwap::from_pointee(operator)) as OpStoreHandle
     }
 
-    pub fn set(&self, handle: OpStoreHandle, _time: Time, operator: T) {
+    pub fn set(&self, handle: OpStoreHandle, operator: T, _time: Time) {
         self.items[handle as usize].store(Arc::new(operator));
     }
 
@@ -54,13 +56,12 @@ impl<T> OpStore<T> {
 }
 
 
-type PhotonicKraus = SmallVec<[SMatrix<Complex<f32>, 3, 3>; 7]>;
 
 
 struct OperatorRecord {
-    pub single: OpStore<PhotonicKraus>, // [3x3 kraus operator; <=7]
+    pub single: OpStore<PhotonicKrausOperators>, // [3x3 kraus operator; <=7]
     pub double: OpStore<SMatrix<Complex<f32>, 4, 4>>, // 4x4 scatter matrix
-    pub epps: OpStore<SMatrix<Complex<f32>, 2, 2>>, // 2x2 density matrix
+    pub epps: OpStore<SMatrix<Complex<f32>, 4, 4>>, // 4x4 density matrix
 }
 
 // this shall be enclosed in Arc, and all the constituants be thread safe

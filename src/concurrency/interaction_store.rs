@@ -28,8 +28,8 @@ pub enum Operator {
         node: NodeId,
         time: Time,
         // todo: these could be possibly compacted to u32
-        sink_left: (OpHandle, PortId),
-        sink_right: (OpHandle, PortId),
+        sink_signal: (OpHandle, PortId),
+        sink_idler: (OpHandle, PortId),
     },
     Single {
         node: NodeId,
@@ -121,7 +121,7 @@ impl Operator {
 // parameter tuned to be packed in 512 bytes
 // further tuning may be necessary specific to experiments
 #[derive(Clone)]
-struct IslandOfInteraction {
+pub struct IslandOfInteraction {
     pub operators: SmallVec<[Operator; 13]>,
     // (wavepacket id, operator index, operator exit port identification)
     pub active_packets: ActivePacketStore,
@@ -132,6 +132,12 @@ struct IslandOfInteraction {
 
 
 impl IslandOfInteraction {
+    pub fn new() -> Self {
+        Self {
+            operators: SmallVec::new(),
+            active_packets: ActivePacketStore::new(),
+        }
+    }
     pub fn set_sink(&mut self, sink_mode: SinkModeLocation, op_handle: OpHandle) {
         self.operators[sink_mode.operator as usize].set_sink(sink_mode.mode, op_handle);
     }
@@ -244,6 +250,8 @@ impl InteractionStore {
         let start_idx = data.registry.end_index();
         let end_idx = data.registry.end_index().wrapping_add(n);
         for handle in WrappingIterU32::new(start_idx, end_idx) {
+            // cell is either assume_init_dropped or garbage uninitialized
+            // it is dangerous to call destructor on it. Could cause double free
             data.buff.unsafely_initialize_cell_with(handle, InteractionCell::None);
         }
         for _ in 0..n {
@@ -377,6 +385,14 @@ impl InteractionStoreSlice {
     pub fn get_mut(&self, handle: u32) -> &mut InteractionCell {
         unsafe {
             self.buff.get_mut(handle)
+        }
+    }
+    pub fn get_handles(&self) -> &Vec<u32> {
+        &self.indices
+    }
+    pub fn set(&mut self, handle: u32, cell: InteractionCell) {
+        unsafe {
+            *self.buff.get_mut(handle) = cell;
         }
     }
     // TODO: Add some methods so the nodes can access the cells

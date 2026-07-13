@@ -33,6 +33,9 @@ use crate::types::core::{
     PortId,
     BatchConstraint,
 };
+use crate::types::physics::{
+    PhotonicKrausOperators,
+};
 
 pub type SinglePortRunner = NodeRunner<SinglePortWorker>;
 
@@ -43,14 +46,11 @@ enum SinglePortEvent {
 // models 
 struct SinglePortWorker {
     sink: Option<TxPort>,
-    delay: u64,
-    seq: NodeId,
-    // jones matrix
-    // but extended as kraus operators
-
     // max u32 picosecond time corresponds to 4ms, which is about 1200km in vacuum distance
     // which is still not out of the realm of possibility, especially with satellite based
     // communication, so we still use u64 here
+    delay: u64,
+    seq: NodeId,
 }
 
 impl NodeWorker for SinglePortWorker {
@@ -140,19 +140,8 @@ pub struct SinglePortWorkerHandle {
 }
 
 pub struct SinglePortTemplate {
-    // Only 7 is needed as stated by my paper
-    // Superoperator space
-    // |H>   [σ σ 0]
-    // |V>   [σ σ 0]
-    // |vac> [H V I]
-    // where σ indicates $\mathcal{M}_2$ pauli errors, H and V are polarization dependent loss, and
-    // I is the vacuum identity
-    // This superoperator has 7 degrees of freedom, which can be representable with a 7x7
-    // $\chi$ matrix, which ultimately reduces down to 7 kraus operators, not 9 as usually
-    // expected from a qutrit system
-    // This robust encoding allows for the expression of a lossless operator in the form of an
-    // extended jones matrix in the form of $J\oplus $I_{1 \times 1}$
-    kraus_operators: SmallVec<[SMatrix<Complex<f32>, 3, 3>; 7]>,
+    // single term with vacuum identity equals to jones matrix
+    kraus_operators: PhotonicKrausOperators,
     delay: u64,
 }
 
@@ -160,7 +149,7 @@ impl NodeHandle for SinglePortWorkerHandle {
     type CustomControlEvent = SinglePortEvent;
     type NodeTemplate = SinglePortTemplate;
 
-    fn new(ctx: Arc<SimulationContext>, template: &SinglePortTemplate, seq: NodeId, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
+    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: NodeId, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
         Self {
             ports,
             control,
@@ -171,10 +160,20 @@ impl NodeHandle for SinglePortWorkerHandle {
     fn get_tx_ports(&self) -> &Vec<TxPort>{
         &self.ports
     }
-    fn get_control_channel(&self) -> &Sender<TimedControlEvent<SinglePortEvent>> {
+    fn get_control_channel(&self) -> &Sender<TimedControlEvent<Self::CustomControlEvent>> {
         &self.control
     }
     fn join(self) {
         self.join_handle.join();
+    }
+}
+
+impl SinglePortWorkerHandle {
+    // Human facing API (can be slow). ctx is cloned for now
+    fn set_kraus_operators(&self, ctx: Arc<SimulationContext>, kraus_operators: PhotonicKrausOperators, time: Time) {
+        ctx.operator_record.single.set(self.seq, kraus_operators, time);
+    }
+    fn set_delay(&self, delay: u64, time: Time) {
+        self.schedule_node_control_event(SinglePortEvent::SetDelay(delay), time);
     }
 }

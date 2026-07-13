@@ -17,21 +17,23 @@ use crate::types::core::{
 
 #[derive(Clone)]
 pub struct WavePacket {
-    pub time: u64,// ps
-    pub time_spread: u32,// ps, three sigma
-    pub wl: f32,
-    pub wl_spread: f32,
+    pub time: Time,// ps
+    pub time_sigma: u32,// ps, three sigma
+    pub wavelength: f32,
+    pub wavelength_sigma: f32,
     pub state_handle: u32,
+
+    // snowflake is possibly unnecessary
     pub snowflake: u32,
 }
 
 impl WavePacket {
     pub fn start_time(&self) -> u64 {
         // three sigma
-        return self.time - self.time_spread as u64 * 3;
+        return self.time - self.time_sigma as u64 * 3;
     }
     pub fn end_time(&self) -> u64 {
-        return self.time + self.time_spread as u64 * 3;
+        return self.time + self.time_sigma as u64 * 3;
     }
     pub fn overlaps(&self, wp: &WavePacket) -> bool {
         return self.start_time() < wp.end_time() && wp.start_time() < self.end_time();
