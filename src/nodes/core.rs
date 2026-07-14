@@ -28,21 +28,21 @@ pub struct WavePacket {
 }
 
 impl WavePacket {
-    pub fn start_time(&self) -> u64 {
+    pub fn leading_edge(&self) -> u64 {
         // three sigma
         return self.time - self.time_sigma as u64 * 3;
     }
-    pub fn end_time(&self) -> u64 {
+    pub fn trailing_edge(&self) -> u64 {
         return self.time + self.time_sigma as u64 * 3;
     }
     pub fn overlaps(&self, wp: &WavePacket) -> bool {
-        return self.start_time() < wp.end_time() && wp.start_time() < self.end_time();
+        return self.leading_edge() < wp.trailing_edge() && wp.leading_edge() < self.trailing_edge();
     }
     pub fn is_strictly_before(&self, reference_time: u64) -> bool {
-        return self.end_time() < reference_time;
+        return self.trailing_edge() < reference_time;
     }
     pub fn is_strictly_after(&self, reference_time: u64) -> bool {
-        return self.start_time() > reference_time;
+        return self.leading_edge() > reference_time;
     }
 }
 
@@ -52,6 +52,37 @@ pub struct WpBatch {
     pub end_time: u64,
     pub batch: Vec<WavePacket>,
 }
+
+impl WpBatch {
+    pub fn push(&mut self, wp: WavePacket) {
+        // wp is assumed to be older than the last packet of the batch
+        debug_assert!(
+        if self.batch.last().is_none() {
+            wp.leading_edge() > self.batch.last().unwrap().leading_edge()
+        } else {
+            wp.leading_edge() > self.end_time
+        }, "Wave packet to be pushed is not older than the last packet or the end time of the batch");
+        self.end_time = wp.leading_edge();
+        self.batch.push(wp);
+    }
+    // TODO: this logic breaks down as soon as we introduce ultra-long packets like that of decaying-ion,
+    // but it works for now as we are operating in the hundreds-of-picoseconds regime of the PPLN
+    // SPDC with 1GHz pump laser.
+    // Dumb but safe method would be to loop through every packets to find the last trailing edge,
+    // but we could cache the result somewhere like start_time and end_time if we decided to go
+    // further with this approach
+    pub fn trailing_edge(&self) -> Time {
+        if self.batch.is_empty() {
+            self.end_time
+        } else {
+            self.batch.last().unwrap().trailing_edge()
+        }
+    }
+    pub fn len(&self) -> usize {
+        self.batch.len()
+    }
+}
+
 
 #[derive(Clone)]
 pub struct TxPort {
@@ -67,7 +98,7 @@ impl TxPort {
 }
 
 pub struct RxPort{
-    // period_end and period_start are aligned to wp.start_time()
+    // period_end and period_start are aligned to wp.leading_edge()
     // which is guaranteed to be monotonic
     pub period_start: u64,
     pub period_end: u64,
@@ -86,10 +117,10 @@ impl RxPort{
         self.period_end = batch.end_time;
         self.current_period = batch.batch.into_iter().peekable();
     }
-    // this guarantees nothing about the disjointness of end_time().
+    // this guarantees nothing about the disjointness of trailing_edge().
     // Meaning, there might be an overlapping wave packet with
-    // wp_later.start_time() < wp_earlier.end_time(),
-    // though the start_time() should be strictly monotonic
+    // wp_later.leading_edge() < wp_earlier.trailing_edge(),
+    // though the leading_edge() should be strictly monotonic
     // This constraint should not affect the calculation,
     // as photons are bosonic, and higher number modes can be
     // treated as an addition of smaller number states in a strict
@@ -106,7 +137,7 @@ impl RxPort{
         let start_time = self.current_time;
         while batch.len() < constraint.max_size {
             if let Some(wp_ref) = self.current_period.peek() {
-                if wp_ref.start_time() > constraint.timeout {
+                if wp_ref.leading_edge() > constraint.timeout {
                     break;
                 }
                 let wp = self.current_period.next().unwrap();
@@ -120,7 +151,7 @@ impl RxPort{
         }
         // if the length constraint is satisfied
         if let Some(wp_ref) = self.current_period.peek() {
-            self.current_time = wp_ref.start_time();
+            self.current_time = wp_ref.leading_edge();
         } else {
             self.current_time = self.period_end;
         }
@@ -136,7 +167,7 @@ impl RxPort{
                 } else {
                     let some_wp = self.current_period.next();
                     if let Some(wp_ref) = self.current_period.peek() {
-                        self.current_time = wp_ref.start_time();
+                        self.current_time = wp_ref.leading_edge();
                     } else {
                         self.current_time = self.period_end;
                     }
@@ -148,6 +179,24 @@ impl RxPort{
                 self.recv();
                 if reference_time < self.period_start {
                     return None;
+                }
+            }
+        }
+    }
+    pub fn is_strictly_after(&mut self, reference_time: u64) -> bool {
+        loop {
+            if let Some(wp_ref) = self.current_period.peek() {
+                if wp_ref.is_strictly_after(reference_time) {
+                    return true;
+                } else {
+                    return false;
+                }
+            } else if reference_time < self.period_end {
+                return true;
+            } else {
+                self.recv();
+                if reference_time < self.period_start {
+                    return true;
                 }
             }
         }

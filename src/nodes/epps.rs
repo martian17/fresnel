@@ -166,14 +166,14 @@ impl NodeWorker for EPPSWorker {
                 self.idler_profile.new_wave_packet(ctx.runner.time),
             ));
         }
-        let mut slice = ctx.global.interaction_store.create_states(pairs.len() as u32);
+        let (mut slice, start_handle, end_handle) = ctx.global.interaction_store.create_states(pairs.len() as u32);
         let mut signal_packets: Vec<WavePacket> = Vec::new();
         let mut idler_packets: Vec<WavePacket> = Vec::new();
         let mut i = 0;
         for (mut signal, mut idler) in pairs.into_iter() {
             // if we don't use indices, this will become double borrow, and we will have to copy the
             // indices, which is slow
-            let handle = slice.get_handles()[i];
+            let handle = start_handle.wrapping_add(i);
             signal.state_handle = handle;
             idler.state_handle = handle;
             let mut island = IslandOfInteraction::new();

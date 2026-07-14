@@ -92,13 +92,10 @@ impl NodeWorker for SinglePortWorker {
         let mut sink_batch: Vec<WavePacket> = Vec::new();
         for wp in batch.batch {
             ctx.runner.time = wp.time;
-            let state = match slice.get_mut(wp.state_handle) {
-                InteractionCell::IslandOfInteraction(state) => state,
-                _cell => {
-                    // TODO: Make this error nicer
-                    panic!("Expected IslandOfInteraction, but got something else"); 
-                }
-            };
+            let state = slice.get_mut(wp.state_handle).unwrap_as_island_or_else(|_| {
+                // TODO: Make this error nicer
+                panic!("Expected IslandOfInteraction, but got something else"); 
+            });
             let sink_mode = state.active_packets.extract(wp.snowflake);
             let op_handle = state.add_operator(Operator::Single{
                 node: self.seq,
@@ -133,6 +130,7 @@ impl NodeWorker for SinglePortWorker {
                 batch: sink_batch,
             });
         } else {
+            panic!("Unconnected sink is currently UB");
             // we don't handle this for now. We just let it leak
             // for wp in sink_batch {
             //     let state = match slice.get_mut(wp.state_handle) {

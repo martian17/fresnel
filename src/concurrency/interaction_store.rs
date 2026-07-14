@@ -22,6 +22,56 @@ use crate::types::core::{
 
 
 
+// #[derive(Clone)]
+// pub enum Operator {
+//     EPPS {
+//         node: NodeId,
+//         time: Time,
+//         // todo: these could be possibly compacted to u32
+//         signal_mode_index: u16,
+//         source_modes: [u16; 0],
+//         sink_modes: [u16; 1],
+//     },
+//     Single {
+//         node: NodeId,
+//         time: Time,
+//         source_modes: [u16; 1],
+//         sink_modes: [u16; 1],
+//     },
+//     // These represent 2x2 linear compoents
+//     // The worker thread then queries the actual Kraus oOperator and Scatter Matrix using
+//     // (NodeId, time)
+//     //
+//     // 2x2 component with interference. Photon incidence on both ports
+//     DualBivariate {
+//         node: NodeId,
+//         time: Time,
+//         // superficial similarties of the packets
+//         // teporal and frequential overlap (unit inner product)
+//         // max is 1.0
+//         packet_similarity: f64,
+//         source_modes: [u16; 2],
+//         sink_modes: [u16; 4],
+//     },
+//     // 2x2 component without interference. One port at a time
+//     DualUnivariate {
+//         node: NodeId,
+//         time: Time,
+//         incidence_port_id: PortId,
+//         source_modes: [u16; 1],
+//         sink_modes: [u16; 2],
+//     },
+//     SPD {
+//         node: NodeId,
+//         time: Time,
+//         source_modes: [u16; 1],
+//         sink_modes: [u16; 0],
+//     },
+//     Dump {
+//         source_modes: [u16; 1],
+//         sink_modes: [u16; 0],
+//     },
+// }
 #[derive(Clone)]
 pub enum Operator {
     EPPS {
@@ -116,6 +166,30 @@ impl Operator {
             },
         }
     }
+    pub fn clone_with_offset(&self, offset: OpHandle) -> Operator {
+        let mut cloned = self.clone();
+        match &mut cloned {
+            Operator::EPPS { sink_signal, sink_idler, .. } => {
+                sink_signal.0 += offset;
+                sink_idler.0 += offset;
+            }
+            Operator::Single { sink, .. } => {
+                sink.0 += offset;
+            }
+            Operator::DualBivariate { sink_left, sink_right, .. } => {
+                sink_left.0 += offset;
+                sink_left.1 += offset;
+                sink_right.0 += offset;
+                sink_right.1 += offset;
+            }
+            Operator::DualUnivariate { sink_left, sink_right, .. } => {
+                sink_left.0 += offset;
+                sink_right.0 += offset;
+            }
+            Operator::SPD { .. } | Operator::Dump => {}
+        }
+        cloned
+    }
 }
 
 // parameter tuned to be packed in 512 bytes
@@ -180,6 +254,9 @@ impl ActivePacketStore {
     pub fn is_empty(&self) -> bool {
         self.active_packets.is_empty()
     }
+    pub fn len(&self) -> u8 {
+        self.active_packets.len() as u8
+    }
 }
 
 #[derive(Clone)]
@@ -220,6 +297,19 @@ pub enum InteractionCell {
     Result(CollapseResult),
 }
 
+impl InteractionCell {
+    #[inline]
+    pub fn unwrap_as_island_or_else<'a, F>(&'a mut self, f: F) -> &mut IslandOfInteraction
+    where
+        F: FnOnce(&Self) -> &'a mut IslandOfInteraction,
+    {
+        match self {
+            InteractionCell::IslandOfInteraction(island) => island,
+            _ => f(self),
+        }
+    }
+}
+
 
 // multi threaded data structure that exposes relevant slices of data
 pub struct InteractionStore{
@@ -242,7 +332,7 @@ impl InteractionStore {
     }
     // states are created in batch, only by EPPS.
     // States are only merged, not created afterwards.
-    pub fn create_states(self: &Arc<Self>, n: u32) -> InteractionStoreSlice {
+    pub fn create_states(self: &Arc<Self>, n: u32) -> (InteractionStoreSlice, u32, u32) {
         let mut data = self.data.lock().unwrap();
         // in-line realloc, since this is the only place where states are created
         data.suggest_realloc(n);
@@ -257,12 +347,13 @@ impl InteractionStore {
         for _ in 0..n {
             data.registry.push_back(CellState::Locked);
         }
-        InteractionStoreSlice{
+        (InteractionStoreSlice{
             parent: self.clone(),
             buff: data.buff.clone(),
             indices: WrappingIterU32::new(start_idx, end_idx).collect(),
             retired: Vec::new(),
-        }
+            moved: Vec::new(),
+        }, start_idx, end_idx)
     }
 
     // pub fn get_states (self: &Arc<Self>, mut wp_batches: Vec<&mut Vec<WavePacket>>) -> InteractionStoreSlice {
@@ -273,6 +364,8 @@ impl InteractionStore {
                 for wp in batch.iter_mut() {
                     // check if moved
                     // common case skips over this part
+                    // this is necessary so that reserved states don't accidentally contain
+                    // tombstone which could redirect the consumer to unreserved section of memory
                     while data.registry.get(wp.state_handle) == CellState::Moved {
                         let InteractionCell::Tombstone(tombstone) = (unsafe { data.buff.get_mut(wp.state_handle) }) else {
                             panic!("InteractionStore data integrity fault: registry indicates tombstone, but found something else");
@@ -304,7 +397,8 @@ impl InteractionStore {
         let mut previous_handle: Option<u32> = None;
         for batch in wp_batches.iter() {
             for wp in batch.iter() {
-                if previous_handle == Some(wp.state_handle) || indices.contains(&wp.state_handle) {
+                if previous_handle == Some(wp.state_handle) {
+                    // heuristics to reduce the number of indices to be pushed
                     continue;
                 }
                 previous_handle = Some(wp.state_handle);
@@ -317,6 +411,7 @@ impl InteractionStore {
             buff: data.buff.clone(),
             indices,
             retired: Vec::new(),
+            moved: Vec::new(),
         }
     }
 }
@@ -376,6 +471,8 @@ pub struct InteractionStoreSlice{
     buff: Arc<StatecellBuffer>,
     indices: Vec<u32>,
     retired: Vec<u32>,
+    // TODO: Use U32OpenAddressSet here and compare the performance
+    moved: Vec<u32>,
 }
 
 impl InteractionStoreSlice {
@@ -387,6 +484,26 @@ impl InteractionStoreSlice {
             self.buff.get_mut(handle)
         }
     }
+    // For cases where tombstone is created inside the same batch, and other wave packets
+    // try to access the same state. (It was an island at the time of batch allocation, but
+    // turned into tombstone as the batch process ran along)
+    pub fn correct_state_handle_if_tombstone(&mut self, wp: &mut WavePacket) {
+        let mut handle = wp.state_handle;
+        // skipped in most cases
+        while let InteractionCell::Tombstone(tombstone) = self.get_mut(handle) {
+            let destination = tombstone.move_destination;
+            tombstone.ref_cnt -= 1;
+            if !self.moved.contains(&handle) {
+                self.moved.push(handle.clone());
+            }
+            handle = destination;
+        }
+        wp.state_handle = handle;
+        // self.get_mut(handle).unwrap_as_island_or_else(|_| {
+        //     panic!("Wavepacket does not point to island of interaction, or Tombstone move destination was not an island of interaction");
+        // })
+    }
+    #[deprecated(note = "slice.handles is no longer guaranteed to contain unique handles. Get start_index provided by create_states")]
     pub fn get_handles(&self) -> &Vec<u32> {
         &self.indices
     }
@@ -394,6 +511,31 @@ impl InteractionStoreSlice {
         unsafe {
             *self.buff.get_mut(handle) = cell;
         }
+    }
+    // NOTE: both donor and recipient are assumed to be IslandOfInteraction
+    pub fn merge_islands(&mut self, donor_handle: u32, recipient_handle: u32){
+        let donor_cell = self.get_mut(donor_handle);
+        let donor = donor_cell.unwrap_as_island_or_else(|_|{
+            panic!("Merge failed. Donor is not IslandOfInteraction");
+        });
+        let recipient = self.get_mut(recipient_handle).unwrap_as_island_or_else(|_|{
+            panic!("Merge failed. Recipient is not IslandOfInteraction");
+        });
+        let offset = recipient.operators.len() as OpHandle;
+        for operator in donor.operators.iter() {
+            recipient.add_operator(operator.clone_with_offset(offset));
+        }
+        for (packet_id, sink_mode) in donor.active_packets.active_packets.iter() {
+            recipient.active_packets.push(packet_id.clone(), SinkModeLocation {
+                operator: sink_mode.operator + offset,
+                mode: sink_mode.mode,
+            });
+        }
+        *donor_cell = InteractionCell::Tombstone(Tombstone {
+            ref_cnt: donor.active_packets.len(),
+            move_destination: recipient_handle,
+        });
+        self.moved.push(donor_handle);
     }
     // TODO: Add some methods so the nodes can access the cells
 }
@@ -403,6 +545,19 @@ impl Drop for InteractionStoreSlice {
         let mut data = self.parent.data.lock().unwrap();
         for i in self.indices.iter().copied() {
             data.registry.set(i, CellState::Free);
+        }
+        for moved_handle in self.moved.iter().copied() {
+            let InteractionCell::Tombstone(tombstone) = (unsafe { data.buff.get_mut(moved_handle) }) else {
+                panic!("InteractionStore data integrity fault: moved handle must contain a tombstone");
+            };
+            if tombstone.ref_cnt == 0 {
+                data.registry.set(moved_handle, CellState::Retired);
+                unsafe {
+                    (*data.buff.cell_ptr(moved_handle)).assume_init_drop();
+                }
+            } else {
+                data.registry.set(moved_handle, CellState::Moved);
+            }
         }
         for i in self.retired.iter().copied() {
             data.registry.set(i, CellState::Retired);
@@ -424,6 +579,8 @@ impl Drop for InteractionStoreSlice {
         if !Arc::ptr_eq(&data.buff, &self.buff) {
             let old_buff = &self.buff;
             let new_buff = &data.buff;
+            // since indices could be duplicated, so this could run multiple times per index
+            // but it shouldn't be too bad
             for i in self.indices.iter().copied() {
                 if data.registry.get(i) == CellState::Retired {
                     continue;

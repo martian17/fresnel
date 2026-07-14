@@ -1,6 +1,7 @@
 mod nodes;
 mod concurrency;
 mod types;
+mod util;
 
 use crate::concurrency::interaction_store::InteractionStore;
 
