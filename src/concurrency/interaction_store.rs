@@ -18,73 +18,26 @@ use crate::types::core::{
     WpSnowflake,
     Time,
     SinkModeLocation,
+    ModeIndex,
 };
 
 
 
-// #[derive(Clone)]
-// pub enum Operator {
-//     EPPS {
-//         node: NodeId,
-//         time: Time,
-//         // todo: these could be possibly compacted to u32
-//         signal_mode_index: u16,
-//         source_modes: [u16; 0],
-//         sink_modes: [u16; 1],
-//     },
-//     Single {
-//         node: NodeId,
-//         time: Time,
-//         source_modes: [u16; 1],
-//         sink_modes: [u16; 1],
-//     },
-//     // These represent 2x2 linear compoents
-//     // The worker thread then queries the actual Kraus oOperator and Scatter Matrix using
-//     // (NodeId, time)
-//     //
-//     // 2x2 component with interference. Photon incidence on both ports
-//     DualBivariate {
-//         node: NodeId,
-//         time: Time,
-//         // superficial similarties of the packets
-//         // teporal and frequential overlap (unit inner product)
-//         // max is 1.0
-//         packet_similarity: f64,
-//         source_modes: [u16; 2],
-//         sink_modes: [u16; 4],
-//     },
-//     // 2x2 component without interference. One port at a time
-//     DualUnivariate {
-//         node: NodeId,
-//         time: Time,
-//         incidence_port_id: PortId,
-//         source_modes: [u16; 1],
-//         sink_modes: [u16; 2],
-//     },
-//     SPD {
-//         node: NodeId,
-//         time: Time,
-//         source_modes: [u16; 1],
-//         sink_modes: [u16; 0],
-//     },
-//     Dump {
-//         source_modes: [u16; 1],
-//         sink_modes: [u16; 0],
-//     },
-// }
 #[derive(Clone)]
 pub enum Operator {
+    #[allow(clippy::upper_case_acronyms)]
     EPPS {
         node: NodeId,
         time: Time,
         // todo: these could be possibly compacted to u32
-        sink_signal: (OpHandle, PortId),
-        sink_idler: (OpHandle, PortId),
+        source_modes: [ModeIndex; 0],
+        sink_modes: [ModeIndex; 2],
     },
     Single {
         node: NodeId,
         time: Time,
-        sink: (OpHandle, PortId),
+        source_modes: [ModeIndex; 1],
+        sink_modes: [ModeIndex; 1],
     },
     // These represent 2x2 linear compoents
     // The worker thread then queries the actual Kraus oOperator and Scatter Matrix using
@@ -97,96 +50,111 @@ pub enum Operator {
         // superficial similarties of the packets
         // teporal and frequential overlap (unit inner product)
         // max is 1.0
-        packet_similarity: f64,
-        sink_left: (OpHandle, OpHandle, PortId),
-        sink_right: (OpHandle, OpHandle, PortId),
+        packet_indistinguishability: f64,
+        source_modes: [ModeIndex; 2],
+        sink_modes: [ModeIndex; 4],
     },
     // 2x2 component without interference. One port at a time
     DualUnivariate {
         node: NodeId,
         time: Time,
         incidence_port_id: PortId,
-        sink_left: (OpHandle, PortId),
-        sink_right: (OpHandle, PortId),
+        source_modes: [ModeIndex; 1],
+        sink_modes: [ModeIndex; 2],
     },
+    #[allow(clippy::upper_case_acronyms)]
     SPD {
         node: NodeId,
         time: Time,
+        source_modes: [ModeIndex; 1],
+        sink_modes: [ModeIndex; 0],
     },
-    Dump,
+    Dump {
+        source_modes: [ModeIndex; 1],
+        sink_modes: [ModeIndex; 0],
+    },
 }
 
 impl Operator {
-    // SinkModeId and PortId are different, since DualBivariate has 4 imaginary exit ports
-    // Target port id is assumed known
-    pub fn set_sink(&mut self, exit_port: SinkModeId, target: OpHandle) {
-        match self {
-            Operator::EPPS {sink_signal, sink_idler, ..} => {
-                // sink_signal: (OpHandle 0, PortId),
-                // sink_idler: (OpHandle 1, PortId),
-                match exit_port {
-                    0 => sink_signal.0 = target,
-                    1 => sink_idler.0 = target,
-                    _ => panic!("Operator::EPPS exit port out of range"),
-                }
-            },
-            Operator::Single {sink, ..} => {
-                // sink: (OpHandle 0, PortId),
-                match exit_port {
-                    0 => sink.0 = target,
-                    _ => panic!("Operator::Single exit port out of range"),
-                }
-            },
-            Operator::DualBivariate{sink_left, sink_right, ..} => {
-                // sink_left: (OpHandle, OpHandle, PortId),
-                // sink_right: (OpHandle, OpHandle, PortId),
-                match exit_port {
-                    0 => sink_left.0 = target,
-                    1 => sink_left.1 = target,
-                    2 => sink_right.0 = target,
-                    3 => sink_right.1 = target,
-                    _ => panic!("Operator::DualBivariate exit port out of range"),
-                }
-            },
-            // 2x2 component without interference. One port at a time
-            Operator::DualUnivariate {sink_left, sink_right, ..} => {
-                // sink_left: (OpHandle, PortId),
-                // sink_right: (OpHandle, PortId),
-                match exit_port {
-                    0 => sink_left.0 = target,
-                    2 => sink_right.0 = target,
-                    _ => panic!("Operator::DualUnivariate exit port out of range"),
-                }
-            },
-            Operator::SPD{..} => {
-                panic!("Operator::SPD should not have a sink port");
-            },
-            Operator::Dump => {
-                panic!("Operator::Dump should not have a sink port");
-            },
-        }
-    }
-    pub fn clone_with_offset(&self, offset: OpHandle) -> Operator {
+    // // SinkModeId and PortId are different, since DualBivariate has 4 imaginary exit ports
+    // // Target port id is assumed known
+    // pub fn set_sink(&mut self, exit_port: SinkModeId, target: OpHandle) {
+    //     match self {
+    //         Operator::EPPS {sink_signal, sink_idler, ..} => {
+    //             // sink_signal: (OpHandle 0, PortId),
+    //             // sink_idler: (OpHandle 1, PortId),
+    //             match exit_port {
+    //                 0 => sink_signal.0 = target,
+    //                 1 => sink_idler.0 = target,
+    //                 _ => panic!("Operator::EPPS exit port out of range"),
+    //             }
+    //         },
+    //         Operator::Single {sink, ..} => {
+    //             // sink: (OpHandle 0, PortId),
+    //             match exit_port {
+    //                 0 => sink.0 = target,
+    //                 _ => panic!("Operator::Single exit port out of range"),
+    //             }
+    //         },
+    //         Operator::DualBivariate{sink_left, sink_right, ..} => {
+    //             // sink_left: (OpHandle, OpHandle, PortId),
+    //             // sink_right: (OpHandle, OpHandle, PortId),
+    //             match exit_port {
+    //                 0 => sink_left.0 = target,
+    //                 1 => sink_left.1 = target,
+    //                 2 => sink_right.0 = target,
+    //                 3 => sink_right.1 = target,
+    //                 _ => panic!("Operator::DualBivariate exit port out of range"),
+    //             }
+    //         },
+    //         // 2x2 component without interference. One port at a time
+    //         Operator::DualUnivariate {sink_left, sink_right, ..} => {
+    //             // sink_left: (OpHandle, PortId),
+    //             // sink_right: (OpHandle, PortId),
+    //             match exit_port {
+    //                 0 => sink_left.0 = target,
+    //                 2 => sink_right.0 = target,
+    //                 _ => panic!("Operator::DualUnivariate exit port out of range"),
+    //             }
+    //         },
+    //         Operator::SPD{..} => {
+    //             panic!("Operator::SPD should not have a sink port");
+    //         },
+    //         Operator::Dump => {
+    //             panic!("Operator::Dump should not have a sink port");
+    //         },
+    //     }
+    // }
+    pub fn clone_with_offset(&self, offset: ModeIndex) -> Operator {
         let mut cloned = self.clone();
         match &mut cloned {
-            Operator::EPPS { sink_signal, sink_idler, .. } => {
-                sink_signal.0 += offset;
-                sink_idler.0 += offset;
+            Operator::EPPS { sink_modes, .. } => {
+                sink_modes[0] += offset;
+                sink_modes[1] += offset;
             }
-            Operator::Single { sink, .. } => {
-                sink.0 += offset;
+            Operator::Single { source_modes, sink_modes, .. } => {
+                source_modes[0] += offset;
+                sink_modes[0] += offset;
             }
-            Operator::DualBivariate { sink_left, sink_right, .. } => {
-                sink_left.0 += offset;
-                sink_left.1 += offset;
-                sink_right.0 += offset;
-                sink_right.1 += offset;
+            Operator::DualBivariate { source_modes, sink_modes, .. } => {
+                source_modes[0] += offset;
+                source_modes[1] += offset;
+                sink_modes[0] += offset;
+                sink_modes[1] += offset;
+                sink_modes[2] += offset;
+                sink_modes[3] += offset;
             }
-            Operator::DualUnivariate { sink_left, sink_right, .. } => {
-                sink_left.0 += offset;
-                sink_right.0 += offset;
+            Operator::DualUnivariate { source_modes, sink_modes, .. } => {
+                source_modes[0] += offset;
+                sink_modes[0] += offset;
+                sink_modes[1] += offset;
             }
-            Operator::SPD { .. } | Operator::Dump => {}
+            Operator::SPD { source_modes, .. } => {
+                source_modes[0] += offset;
+            },
+            Operator::Dump { source_modes, .. } => {
+                source_modes[0] += offset;
+            }
         }
         cloned
     }
@@ -200,6 +168,7 @@ pub struct IslandOfInteraction {
     // (wavepacket id, operator index, operator exit port identification)
     pub active_packets: ActivePacketStore,
     //SmallVec<[(u32, OpHandle, u8); 8]>
+    mode_max: u16,// mode_index < mode_max
 }
 
 // if active packets becomes 0, we dispatch 
@@ -210,21 +179,29 @@ impl IslandOfInteraction {
         Self {
             operators: SmallVec::new(),
             active_packets: ActivePacketStore::new(),
+            mode_max: 0,
         }
     }
-    pub fn set_sink(&mut self, sink_mode: SinkModeLocation, op_handle: OpHandle) {
-        self.operators[sink_mode.operator as usize].set_sink(sink_mode.mode, op_handle);
-    }
+    // pub fn set_sink(&mut self, sink_mode: SinkModeLocation, op_handle: OpHandle) {
+    //     self.operators[sink_mode.operator as usize].set_sink(sink_mode.mode, op_handle);
+    // }
+    #[deprecated(note="Operators do not need to resolve to each other anymore, as interaction is kept track of virtually using [ModeIndex]")]
     pub fn add_operator(&mut self, operator: Operator) -> OpHandle {
         let len = self.operators.len();
         self.operators.push(operator);
         len as OpHandle
     }
+    pub fn register_wavepacket(&mut self, wp: &WavePacket) -> ModeIndex {
+        let mode_index = self.mode_max;
+        self.active_packets.add(wp.snowflake, self.mode_max);
+        self.mode_max += 1;
+        mode_index
+    }
 }
 
 #[derive(Clone)]
 pub struct ActivePacketStore {
-    active_packets: SmallVec<[(WpSnowflake, SinkModeLocation); 8]>
+    active_packets: SmallVec<[(WpSnowflake, ModeIndex); 8]>,
 }
 
 impl ActivePacketStore {
@@ -233,7 +210,7 @@ impl ActivePacketStore {
             active_packets: SmallVec::new(),
         }
     }
-    pub fn extract(&mut self, packet_id: WpSnowflake) -> SinkModeLocation {
+    pub fn extract(&mut self, packet_id: WpSnowflake) -> ModeIndex {
         let mut match_index = self.active_packets.len();
         for i in 0..self.active_packets.len() {
             if self.active_packets[i].0 == packet_id {
@@ -248,8 +225,8 @@ impl ActivePacketStore {
         let removed = self.active_packets.remove(match_index);
         removed.1
     }
-    pub fn push(&mut self, packet_id: WpSnowflake, sink_mode: SinkModeLocation){
-        self.active_packets.push((packet_id, sink_mode));
+    pub fn add(&mut self, packet_id: WpSnowflake, mode_id: ModeIndex){
+        self.active_packets.push((packet_id, mode_id));
     }
     pub fn is_empty(&self) -> bool {
         self.active_packets.is_empty()
@@ -260,7 +237,7 @@ impl ActivePacketStore {
 }
 
 #[derive(Clone)]
-struct Tombstone{
+pub struct Tombstone{
     // 256 qubits is more than too much to handle already
     // so u8 suffices
     ref_cnt: u8,
@@ -280,7 +257,7 @@ enum WpResult {
 }
 
 #[derive(Clone)]
-struct CollapseResult {
+pub struct CollapseResult {
     // got some leeway, 20 packets would robably be overkill, but got 512 bytes of space
     packets: SmallVec<[WpResult; 20]>,
 }
@@ -299,7 +276,7 @@ pub enum InteractionCell {
 
 impl InteractionCell {
     #[inline]
-    pub fn unwrap_as_island_or_else<'a, F>(&'a mut self, f: F) -> &mut IslandOfInteraction
+    pub fn unwrap_as_island_or_else<'a, F>(&'a mut self, f: F) -> &'a mut IslandOfInteraction
     where
         F: FnOnce(&Self) -> &'a mut IslandOfInteraction,
     {
@@ -367,7 +344,7 @@ impl InteractionStore {
                     // this is necessary so that reserved states don't accidentally contain
                     // tombstone which could redirect the consumer to unreserved section of memory
                     while data.registry.get(wp.state_handle) == CellState::Moved {
-                        let InteractionCell::Tombstone(tombstone) = (unsafe { data.buff.get_mut(wp.state_handle) }) else {
+                        let InteractionCell::Tombstone(tombstone) = (unsafe { data.buff.unsafely_get_mut(wp.state_handle) }) else {
                             panic!("InteractionStore data integrity fault: registry indicates tombstone, but found something else");
                         };
                         tombstone.ref_cnt -= 1;
@@ -479,9 +456,15 @@ impl InteractionStoreSlice {
     pub fn retire(&mut self, handle: u32) {
         self.retired.push(handle);
     }
-    pub fn get_mut(&self, handle: u32) -> &mut InteractionCell {
+    pub fn get_mut(&mut self, handle: u32) -> &mut InteractionCell {
         unsafe {
-            self.buff.get_mut(handle)
+            self.buff.unsafely_get_mut(handle)
+        }
+    }
+    #[allow(clippy::mut_from_ref)]
+    pub unsafe fn unsafely_get_mut(&self, handle: u32) -> &mut InteractionCell {
+        unsafe {
+            self.buff.unsafely_get_mut(handle)
         }
     }
     // For cases where tombstone is created inside the same batch, and other wave packets
@@ -494,7 +477,7 @@ impl InteractionStoreSlice {
             let destination = tombstone.move_destination;
             tombstone.ref_cnt -= 1;
             if !self.moved.contains(&handle) {
-                self.moved.push(handle.clone());
+                self.moved.push(handle);
             }
             handle = destination;
         }
@@ -509,27 +492,26 @@ impl InteractionStoreSlice {
     }
     pub fn set(&mut self, handle: u32, cell: InteractionCell) {
         unsafe {
-            *self.buff.get_mut(handle) = cell;
+            *self.buff.unsafely_get_mut(handle) = cell;
         }
     }
     // NOTE: both donor and recipient are assumed to be IslandOfInteraction
     pub fn merge_islands(&mut self, donor_handle: u32, recipient_handle: u32){
-        let donor_cell = self.get_mut(donor_handle);
+        // NOTE: donor_handle and recipient_handle are provably disjoint,
+        // so we get multiple mutable borrows using unsafe
+        let donor_cell = unsafe{self.unsafely_get_mut(donor_handle)};
         let donor = donor_cell.unwrap_as_island_or_else(|_|{
             panic!("Merge failed. Donor is not IslandOfInteraction");
         });
-        let recipient = self.get_mut(recipient_handle).unwrap_as_island_or_else(|_|{
+        let recipient = unsafe{self.unsafely_get_mut(recipient_handle)}.unwrap_as_island_or_else(|_|{
             panic!("Merge failed. Recipient is not IslandOfInteraction");
         });
-        let offset = recipient.operators.len() as OpHandle;
+        let offset = recipient.mode_max;
         for operator in donor.operators.iter() {
-            recipient.add_operator(operator.clone_with_offset(offset));
+            recipient.operators.push(operator.clone_with_offset(offset));
         }
-        for (packet_id, sink_mode) in donor.active_packets.active_packets.iter() {
-            recipient.active_packets.push(packet_id.clone(), SinkModeLocation {
-                operator: sink_mode.operator + offset,
-                mode: sink_mode.mode,
-            });
+        for (packet_id, mode_idx) in donor.active_packets.active_packets.iter() {
+            recipient.active_packets.add(*packet_id, mode_idx + offset);
         }
         *donor_cell = InteractionCell::Tombstone(Tombstone {
             ref_cnt: donor.active_packets.len(),
@@ -547,7 +529,7 @@ impl Drop for InteractionStoreSlice {
             data.registry.set(i, CellState::Free);
         }
         for moved_handle in self.moved.iter().copied() {
-            let InteractionCell::Tombstone(tombstone) = (unsafe { data.buff.get_mut(moved_handle) }) else {
+            let InteractionCell::Tombstone(tombstone) = (unsafe { data.buff.unsafely_get_mut(moved_handle) }) else {
                 panic!("InteractionStore data integrity fault: moved handle must contain a tombstone");
             };
             if tombstone.ref_cnt == 0 {
@@ -630,7 +612,8 @@ impl StatecellBuffer {
     // }
     // this one can be called twice in a row accidentally
     // marking it unsafe will make the danger more explicit
-    unsafe fn get_mut(&self, handle: u32) -> &mut InteractionCell {
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn unsafely_get_mut(&self, handle: u32) -> &mut InteractionCell {
         unsafe{(*self.cell_ptr(handle)).assume_init_mut()}
     }
     fn capacity(&self) -> usize {

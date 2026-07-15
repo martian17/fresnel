@@ -4,6 +4,7 @@ use std::sync::{Mutex, Condvar, Arc};
 use std::thread;
 use std::collections::BinaryHeap;
 use std::sync::mpsc;
+use std::f64::consts::PI;
 
 use crate::concurrency::context::SimulationContext;
 
@@ -15,7 +16,7 @@ use crate::types::core::{
     BatchConstraint,
 };
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct WavePacket {
     pub time: Time,// ps
     pub time_sigma: u32,// ps, three sigma
@@ -27,10 +28,13 @@ pub struct WavePacket {
     pub snowflake: u32,
 }
 
+/// speed of light in nm/ps
+const C_NM_PER_PS: f64 = 299_792.458;
+
 impl WavePacket {
     pub fn leading_edge(&self) -> u64 {
         // three sigma
-        return self.time - self.time_sigma as u64 * 3;
+        return self.time.saturating_sub(self.time_sigma as u64 * 3);
     }
     pub fn trailing_edge(&self) -> u64 {
         return self.time + self.time_sigma as u64 * 3;
@@ -43,6 +47,35 @@ impl WavePacket {
     }
     pub fn is_strictly_after(&self, reference_time: u64) -> bool {
         return self.leading_edge() > reference_time;
+    }
+    /// |<phi_1|phi_2>|^2 for pure, transform-limited Gaussian packets,
+    /// identical polarization assumed. Returns a value in [0, 1].
+    pub fn indistinguishability(&self, other: &WavePacket) -> f64 {
+        let s1 = self.time_sigma as f64;
+        let s2 = other.time_sigma as f64;
+
+        // Degenerate (delta-like) packets: identical carriers & times → 1, else 0.
+        if s1 == 0.0 || s2 == 0.0 {
+            return if self.time == other.time
+                && self.wavelength == other.wavelength
+                && s1 == s2 { 1.0 } else { 0.0 };
+        }
+
+        // Δt in ps — go through i128 first: u64 → f64 loses integer
+        // precision above 2^53, and the *difference* is what matters.
+        let dt = (self.time as i128 - other.time as i128) as f64;
+
+        // carrier angular frequency detuning, rad/ps
+        let w1 = 2.0 * PI * C_NM_PER_PS / self.wavelength as f64;
+        let w2 = 2.0 * PI * C_NM_PER_PS / other.wavelength as f64;
+        let dw = w1 - w2;
+
+        let ssum = s1 * s1 + s2 * s2;
+        let prefactor = 2.0 * s1 * s2 / ssum;
+        let exponent = -dt * dt / (2.0 * ssum)
+                       - 2.0 * (s1 * s1) * (s2 * s2) * dw * dw / ssum;
+
+        prefactor * exponent.exp()
     }
 }
 
@@ -57,8 +90,8 @@ impl WpBatch {
     pub fn push(&mut self, wp: WavePacket) {
         // wp is assumed to be older than the last packet of the batch
         debug_assert!(
-        if self.batch.last().is_none() {
-            wp.leading_edge() > self.batch.last().unwrap().leading_edge()
+        if let Some(last_wp) = self.batch.last() {
+            wp.leading_edge() > last_wp.leading_edge()
         } else {
             wp.leading_edge() > self.end_time
         }, "Wave packet to be pushed is not older than the last packet or the end time of the batch");
@@ -186,11 +219,7 @@ impl RxPort{
     pub fn is_strictly_after(&mut self, reference_time: u64) -> bool {
         loop {
             if let Some(wp_ref) = self.current_period.peek() {
-                if wp_ref.is_strictly_after(reference_time) {
-                    return true;
-                } else {
-                    return false;
-                }
+                return wp_ref.is_strictly_after(reference_time);
             } else if reference_time < self.period_end {
                 return true;
             } else {
@@ -208,12 +237,12 @@ impl RxPort{
 // Moved from generic_logic.rs
 
 
-struct EntryPortHandle{
+pub struct EntryPortHandle{
     tx: TxPort,
 }
 
 
-struct ExitPortHandle<'a, T: NodeHandle> {
+pub struct ExitPortHandle<'a, T: NodeHandle> {
     node_handle: &'a T,
     exit_port_id: PortId,
 }
@@ -226,7 +255,7 @@ impl<'a, T: NodeHandle> ExitPortHandle<'a, T> {
         self.node_handle.get_control_channel().send(NodeControlEvent::Connect{
             exit_port_id: self.exit_port_id,
             tx_port: port.tx,
-        }.timed(time));
+        }.timed(time)).unwrap();
     }
 }
 
@@ -299,7 +328,7 @@ pub trait NodeHandle: Sized {
             tx: self.get_tx_ports()[id as usize].clone(),
         }
     }
-    fn exit_port(&self, id: PortId) -> ExitPortHandle<Self> {
+    fn exit_port(&'_ self, id: PortId) -> ExitPortHandle<'_, Self> {
         ExitPortHandle::<Self>{
             node_handle: self,
             exit_port_id: id,
@@ -317,18 +346,18 @@ pub trait NodeHandle: Sized {
     }
 
     fn schedule_start(&self, time: Time) {
-        self.get_control_channel().send(NodeControlEvent::Start.timed(time));
+        self.get_control_channel().send(NodeControlEvent::Start.timed(time)).unwrap();
     }
     fn schedule_stop(&self, time: Time) {
-        self.get_control_channel().send(NodeControlEvent::Stop.timed(time));
+        self.get_control_channel().send(NodeControlEvent::Stop.timed(time)).unwrap();
     }
     fn schedule_node_control_event(&self, event: Self::CustomControlEvent, time: Time) {
-        self.get_control_channel().send(NodeControlEvent::Custom(event).timed(time));
+        self.get_control_channel().send(NodeControlEvent::Custom(event).timed(time)).unwrap();
     }
 }
 
 
-struct RunnerState<T: NodeWorker> {
+pub struct RunnerState<T: NodeWorker> {
     pub rx_ports: Vec<RxPort>,
     pub control_rx: Receiver<TimedControlEvent<T::CustomControlEvent>>,
     pub control_event_queue: BinaryHeap<TimedControlEvent<T::CustomControlEvent>>,

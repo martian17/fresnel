@@ -41,12 +41,12 @@ use crate::types::physics::{
 
 pub type SinglePortRunner = NodeRunner<SinglePortWorker>;
 
-enum SinglePortEvent {
+pub enum SinglePortEvent {
     SetDelay(u64),
 }
 
 // models 
-struct SinglePortWorker {
+pub struct SinglePortWorker {
     sink: Option<TxPort>,
     // max u32 picosecond time corresponds to 4ms, which is about 1200km in vacuum distance
     // which is still not out of the realm of possibility, especially with satellite based
@@ -88,39 +88,34 @@ impl NodeWorker for SinglePortWorker {
         let batch_policy = &ctx.global.config.load().batch;
         let mut batch = port.get_batch(batch_policy.get_constraint(port.current_time));
 
-        let slice = ctx.global.interaction_store.get_states(vec![&mut batch.batch]);
+        let mut slice = ctx.global.interaction_store.get_states(vec![&mut batch.batch]);
         let mut sink_batch: Vec<WavePacket> = Vec::new();
-        for wp in batch.batch {
-            ctx.runner.time = wp.time;
-            let state = slice.get_mut(wp.state_handle).unwrap_as_island_or_else(|_| {
+        for wp_source in batch.batch {
+            ctx.runner.time = wp_source.time;
+            let state = slice.get_mut(wp_source.state_handle).unwrap_as_island_or_else(|_| {
                 // TODO: Make this error nicer
                 panic!("Expected IslandOfInteraction, but got something else"); 
             });
-            let sink_mode = state.active_packets.extract(wp.snowflake);
-            let op_handle = state.add_operator(Operator::Single{
-                node: self.seq,
-                time: wp.time,
-                // these are placeholders. It will be replaced later using set_sink
-                sink: (0, 0),
-            });
-            state.set_sink(sink_mode, op_handle);
-            let sink_packet_snowflake = snowflake::next_u32();
-            sink_batch.push(WavePacket{
-                time: wp.time + self.delay,
+            let wp_sink = WavePacket{
+                time: wp_source.time + self.delay,
                 // TODO: Consider adding dispersion, and start thinking about
                 // how to model chromatic abberation
-                time_sigma: wp.time_sigma,
-                wavelength: wp.wavelength,
-                wavelength_sigma: wp.wavelength_sigma,
-                state_handle: wp.state_handle,
-                snowflake: sink_packet_snowflake,
+                time_sigma: wp_source.time_sigma,
+                wavelength: wp_source.wavelength,
+                wavelength_sigma: wp_source.wavelength_sigma,
+                state_handle: wp_source.state_handle,
+                snowflake: snowflake::next_u32(),
+            };
+            let source_mode = state.active_packets.extract(wp_source.snowflake);
+            let sink_mode = state.register_wavepacket(&wp_sink);
+            state.operators.push(Operator::Single{
+                node: self.seq,
+                time: wp_source.time,
+                // these are placeholders. It will be replaced later using set_sink
+                source_modes: [source_mode],
+                sink_modes: [sink_mode],
             });
-            state.active_packets.push(sink_packet_snowflake, SinkModeLocation{
-                operator: op_handle,
-                // single port only has single exit mode
-                // and therefore mode index is always 0
-                mode: 0,
-            });
+            sink_batch.push(wp_sink);
         }
 
         if let Some(port) = &mut self.sink {
@@ -128,7 +123,7 @@ impl NodeWorker for SinglePortWorker {
                 start_time: batch.start_time + self.delay,
                 end_time: batch.end_time + self.delay,
                 batch: sink_batch,
-            });
+            }).unwrap();
         } else {
             panic!("Unconnected sink is currently UB");
             // we don't handle this for now. We just let it leak
@@ -182,7 +177,7 @@ impl NodeHandle for SinglePortWorkerHandle {
         &self.control
     }
     fn join(self) {
-        self.join_handle.join();
+        self.join_handle.join().unwrap();
     }
 }
 

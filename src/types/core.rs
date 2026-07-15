@@ -31,6 +31,7 @@ pub type PortId = u8;
 pub type SinkModeId = u8;
 pub type WpSnowflake = u32;
 pub type Time = u64;
+pub type ModeIndex = u16;
 
 #[derive(Clone)]
 pub struct PortAddress {
@@ -44,6 +45,7 @@ pub struct SinkModeLocation {
     pub mode: SinkModeId,
 }
 
+#[derive(Clone)]
 pub struct BatchConstraint {
     pub timeout: u64, // picoseconds
     pub max_size: usize,

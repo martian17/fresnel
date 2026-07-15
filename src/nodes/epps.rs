@@ -108,7 +108,7 @@ impl NodeWorker for EPPSWorker {
         }
     }
     fn register_operator(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate) -> NodeId {
-        ctx.operator_record.epps.add(template.density_matrix.clone())
+        ctx.operator_record.epps.add(template.density_matrix)
     }
     fn handle_connection(&mut self, ctx: RunnerContext<Self>, exit_port_id: PortId, tx_port: TxPort) {
         match exit_port_id {
@@ -169,41 +169,35 @@ impl NodeWorker for EPPSWorker {
         let (mut slice, start_handle, end_handle) = ctx.global.interaction_store.create_states(pairs.len() as u32);
         let mut signal_packets: Vec<WavePacket> = Vec::new();
         let mut idler_packets: Vec<WavePacket> = Vec::new();
-        let mut i = 0;
-        for (mut signal, mut idler) in pairs.into_iter() {
+        for (i, (mut signal, mut idler)) in pairs.into_iter().enumerate() {
             // if we don't use indices, this will become double borrow, and we will have to copy the
             // indices, which is slow
-            let handle = start_handle.wrapping_add(i);
+            let handle = start_handle.wrapping_add(i as u32);
             signal.state_handle = handle;
             idler.state_handle = handle;
             let mut island = IslandOfInteraction::new();
-            let op_handle = island.add_operator(Operator::EPPS{
+            let signal_mode = island.register_wavepacket(&signal);
+            let idler_mode = island.register_wavepacket(&idler);
+            island.operators.push(Operator::EPPS{
                 node: self.seq,
                 time: signal.time,
-                // will be overwritten by the next operator
-                sink_signal: (0, 0),
-                sink_idler: (0, 0),
-            });
-            island.active_packets.push(signal.snowflake, SinkModeLocation{
-                operator: op_handle,
-                mode: 0,
-            });
-            island.active_packets.push(idler.snowflake, SinkModeLocation{
-                operator: op_handle,
-                mode: 1,
+                source_modes: [],
+                sink_modes: [
+                        signal_mode,
+                        idler_mode,
+                ],
             });
 
             slice.set(handle, InteractionCell::IslandOfInteraction(island));
             signal_packets.push(signal);
             idler_packets.push(idler);
-            i += 1;
         }
         if let Some(signal_sink) = &mut self.signal_sink {
             signal_sink.send_batch(WpBatch{
                 start_time,
                 end_time: ctx.runner.time,
                 batch: signal_packets,
-            });
+            }).unwrap();
         } else {
             panic!("signal sink undefined. UB for now. gotta implement loss operator");
         }
@@ -213,7 +207,7 @@ impl NodeWorker for EPPSWorker {
                 start_time,
                 end_time: ctx.runner.time,
                 batch: idler_packets,
-            });
+            }).unwrap();
         } else {
             panic!("idler sink undefined. UB for now. gotta implement loss operator");
         }
@@ -247,7 +241,7 @@ impl NodeHandle for EPPSWorkerHandle {
         &self.control
     }
     fn join(self) {
-        self.join_handle.join();
+        self.join_handle.join().unwrap();
     }
 }
 

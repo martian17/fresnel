@@ -16,27 +16,27 @@ use std::sync::{Arc};
 // count up)
 
 
-struct DualPortOperatorStore {
-    // the thread should access one of these operators at a time, so I'm trying to think of what's
-    // teh right way to lock this
-    Vec<DualPortOperatorProvider>,
-}
-
-// We use SoA pattern
-struct QuantumOperatorContext {
-    dual_port: DualPortOperatorStore,
-    single_port: SinglePortOperatorStore,
-    spd: SPDOperatorStore,
-    epps: EPPSOPeratorStore,
-}
-
-struct SimulationContext {
-    interaction_store: Arc<InteractionStore>,
-    quantum_operator_context: QuantumOperatorContext,
-}
-
+// struct DualPortOperatorStore {
+//     // the thread should access one of these operators at a time, so I'm trying to think of what's
+//     // teh right way to lock this
+//     Vec<DualPortOperatorProvider>,
+// }
+// 
+// // We use SoA pattern
+// struct QuantumOperatorContext {
+//     dual_port: DualPortOperatorStore,
+//     single_port: SinglePortOperatorStore,
+//     spd: SPDOperatorStore,
+//     epps: EPPSOPeratorStore,
+// }
+// 
+// struct SimulationContext {
+//     interaction_store: Arc<InteractionStore>,
+//     quantum_operator_context: QuantumOperatorContext,
+// }
+// 
 fn main() {
-    let interaction_store = Arc::new(InteractionStore::new());
+    // let interaction_store = Arc::new(InteractionStore::new());
 
 }
 

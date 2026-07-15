@@ -58,7 +58,7 @@ impl<T> OpStore<T> {
 
 
 
-struct OperatorRecord {
+pub struct OperatorRecord {
     pub single: OpStore<PhotonicKrausOperators>, // [3x3 kraus operator; <=7]
     pub dual: OpStore<SMatrix<Complex<f32>, 4, 4>>, // 4x4 scatter matrix
     pub epps: OpStore<SMatrix<Complex<f32>, 4, 4>>, // 4x4 density matrix

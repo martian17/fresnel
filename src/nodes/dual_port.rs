@@ -39,13 +39,18 @@ use crate::types::physics::{
     PhotonicKrausOperators,
 };
 use crate::util::set::U32OpenAddressSet;
+use crate::nodes::dual_port_iterator::{
+    DualPortIterator,
+    DualPortCluster,
+    PhotonicCluster,
+};
 
 pub type DualPortRunner = NodeRunner<DualPortWorker>;
 
-enum DualPortEvent {}
+pub enum DualPortEvent {}
 
 // models 
-struct DualPortWorker {
+pub struct DualPortWorker {
     sink_left: Option<TxPort>,
     sink_right: Option<TxPort>,
     seq: NodeId,
@@ -64,7 +69,7 @@ impl NodeWorker for DualPortWorker {
         }
     }
     fn register_operator(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate) -> NodeId {
-        ctx.operator_record.dual.add(template.scattering_matrix.clone())
+        ctx.operator_record.dual.add(template.scattering_matrix)
     }
     fn handle_connection(&mut self, ctx: RunnerContext<Self>, exit_port_id: PortId, tx_port: TxPort) {
         match exit_port_id {
@@ -84,151 +89,158 @@ impl NodeWorker for DualPortWorker {
     }
     fn process_batch(&mut self, ctx: RunnerContext<Self>) {
         let batch_policy = &ctx.global.config.load().batch;
-        let port_left = &mut ctx.runner.rx_ports[0];
-        let port_right = &mut ctx.runner.rx_ports[1];
 
-        let batch_constraint = batch_policy.get_constraint(port_left.current_time.min(port_right.current_time));
+        // NOTE: Needed to do disjoint borrow. Normal indexing doesn't work
+        let (left_slice, right_slice) = ctx.runner.rx_ports.split_at_mut(1);
+        let left_port = &mut left_slice[0];
+        let right_port = &mut right_slice[0];
+        // let left_port = &mut ctx.runner.rx_ports[0];
+        // let right_port = &mut ctx.runner.rx_ports[1];
 
-        let mut batch_left = port_left.get_batch(batch_constraint);
-        let mut batch_right = port_left.get_batch(batch_constraint);
+        let left_time = left_port.current_time;
+        let right_time = right_port.current_time;
+        let batch_constraint = batch_policy.get_constraint(left_time.min(right_time));
+
+        let mut left_batch = left_port.get_batch(batch_constraint.clone());
+        let mut right_batch = left_port.get_batch(batch_constraint.clone());
+        let start_time = left_batch.start_time.min(right_batch.start_time);
+        let end_time = left_batch.end_time.min(right_batch.end_time);
 
         // Temporal boundary condition. We don't want any packet clusters (island of interaction)
         // cross batch boundary
+        //
+        // Overlapping operator weights should add up to 1
         loop {
-            let left_edge = batch_left.trailing_edge();
-            while let Some(wp) = port_right.get_overlapping_or_before(left_edge) {
-                batch_right.push(wp);
+            let left_edge = left_batch.trailing_edge();
+            while let Some(wp) = right_port.get_overlapping_or_before(left_edge) {
+                right_batch.push(wp);
             }
-            let right_edge = batch_right.trailing_edge();
-            while let Some(wp) = port_left.get_overlapping_or_before(right_edge) {
-                batch_left.push(wp);
+            let right_edge = right_batch.trailing_edge();
+            while let Some(wp) = left_port.get_overlapping_or_before(right_edge) {
+                left_batch.push(wp);
             }
-            if port_right.is_strictly_after(batch_left.trailing_edge()) {
+            if right_port.is_strictly_after(left_batch.trailing_edge()) {
                 break;
             }
         }
-        let slice = ctx.global.interaction_store.get_states(vec![&mut batch_left.batch, &mut batch_right.batch]);
-        let sink_left_batch: Vec<WavePacket> = Vec::new();
-        let sink_right_batch: Vec<WavePacket> = Vec::new();
+        let mut slice = ctx.global.interaction_store.get_states(vec![&mut left_batch.batch, &mut right_batch.batch]);
+        let mut sink_batch_left: Vec<WavePacket> = Vec::new();
+        let mut sink_batch_right: Vec<WavePacket> = Vec::new();
 
+        for cluster in DualPortIterator::new(left_batch, right_batch) {
+            match cluster {
+                // TODO: Merge these two branches
+                DualPortCluster::LeftIsolate(wp_source) => {
+                    ctx.runner.time = wp_source.time;
+                    let state = slice.get_mut(wp_source.state_handle).unwrap_as_island_or_else(|_| {
+                        panic!("Expected IslandOfInteraction, but got something else");
+                    });
+                    let mut wp_sink_left = wp_source.clone();
+                    let mut wp_sink_right = wp_source.clone();
+                    wp_sink_left.snowflake = snowflake::next_u32();
+                    wp_sink_right.snowflake = snowflake::next_u32();
+                    let source_mode = state.active_packets.extract(wp_source.snowflake);
+                    let sink_mode_left = state.register_wavepacket(&wp_sink_left);
+                    let sink_mode_right = state.register_wavepacket(&wp_sink_right);
+                    state.operators.push(Operator::DualUnivariate{
+                        node: self.seq,
+                        time: wp_source.time,
+                        incidence_port_id: 0,
+                        source_modes: [source_mode],
+                        sink_modes: [sink_mode_left, sink_mode_right],
+                    });
+                    sink_batch_left.push(wp_sink_left);
+                    sink_batch_right.push(wp_sink_right);
+                },
+                DualPortCluster::RightIsolate(wp_source) => {
+                    ctx.runner.time = wp_source.time;
+                    let state = slice.get_mut(wp_source.state_handle).unwrap_as_island_or_else(|_| {
+                        panic!("Expected IslandOfInteraction, but got something else");
+                    });
+                    let mut wp_sink_left = wp_source.clone();
+                    let mut wp_sink_right = wp_source.clone();
+                    wp_sink_left.snowflake = snowflake::next_u32();
+                    wp_sink_right.snowflake = snowflake::next_u32();
+                    let source_mode = state.active_packets.extract(wp_source.snowflake);
+                    let sink_mode_left = state.register_wavepacket(&wp_sink_left);
+                    let sink_mode_right = state.register_wavepacket(&wp_sink_right);
+                    state.operators.push(Operator::DualUnivariate{
+                        node: self.seq,
+                        time: wp_source.time,
+                        incidence_port_id: 1,
+                        source_modes: [source_mode],
+                        sink_modes: [sink_mode_left, sink_mode_right],
+                    });
+                    sink_batch_left.push(wp_sink_left);
+                    sink_batch_right.push(wp_sink_right);
+                },
+                DualPortCluster::Cluster(mut cluster) => {
+                    // TODO: Investigate correctness of this time definition
+                    // This is not monotonically ascending, but it is good enough
+                    // forn the coarse time keeping purposes
+                    // In order to change the order we might need to reshuffle some
+                    // wavepackets and clusters on the fly, which would warrant the use
+                    // of intermediate buffering, which is at this point too costly
+                    // to implement with unknown runtime overhead. Let's keep it simple.
+                    ctx.runner.time = cluster.time().max(ctx.runner.time);
+                    // merge everything
+                    let state_handle = cluster.merge_states(&mut slice);
+                    let state = slice.get_mut(state_handle).unwrap_as_island_or_else(|_| {
+                        panic!("Expected IslandOfInteraction, but got something else");
+                    });
+                    for (left_index, right_index) in cluster.pairs.iter() {
+                        let wp_source_left = &cluster.left_packets[*left_index as usize];
+                        let wp_source_right = &cluster.right_packets[*right_index as usize];
 
-        let mut right_pivot: usize = 0;
-        let mut right_last_overlap: usize = usize::MAX;
+                        let mut wp_sink_left_left = wp_source_left.clone();
+                        let mut wp_sink_left_right = wp_source_left.clone();
+                        let mut wp_sink_right_left = wp_source_right.clone();
+                        let mut wp_sink_right_right = wp_source_right.clone();
+                        wp_sink_left_left.snowflake = snowflake::next_u32();
+                        wp_sink_left_right.snowflake = snowflake::next_u32();
+                        wp_sink_right_left.snowflake = snowflake::next_u32();
+                        wp_sink_right_right.snowflake = snowflake::next_u32();
 
-        for left_idx in 0..batch_left.len() {
-            let mut left_packet = batch_left.batch[left_idx];
-            let mut did_overlap = false;
-            for right_idx in right_pivot..batch_right.len() {
-                let mut right_packet = batch_right.batch[right_idx];
-                if left_packet.overlaps(&right_packet) {
-                    // overlap case
-                    did_overlap = true;
-                    right_last_overlap = right_idx;
-                } else if right_packet.time < left_packet.time {
-                    if right_idx > right_last_overlap {
-                        // everything between last overlap and the left packet should be isolates
-                        // right isolate
-
+                        let source_mode_left = state.active_packets.extract(wp_source_left.snowflake);
+                        let source_mode_right = state.active_packets.extract(wp_source_right.snowflake);
+                        let sink_mode_left_left =   state.register_wavepacket(&wp_sink_left_left);
+                        let sink_mode_left_right =  state.register_wavepacket(&wp_sink_left_right);
+                        let sink_mode_right_left =  state.register_wavepacket(&wp_sink_right_left);
+                        let sink_mode_right_right = state.register_wavepacket(&wp_sink_right_right);
+                        state.operators.push(Operator::DualBivariate{
+                            node: self.seq,
+                            time: ctx.runner.time,
+                            packet_indistinguishability: wp_source_left.indistinguishability(wp_source_right),
+                            source_modes: [source_mode_left, source_mode_right],
+                            sink_modes: [sink_mode_left_left, sink_mode_left_right, sink_mode_right_left, sink_mode_right_right],
+                        });
+                        sink_batch_left.push(wp_sink_left_left);
+                        sink_batch_left.push(wp_sink_left_right);
+                        sink_batch_right.push(wp_sink_right_left);
+                        sink_batch_right.push(wp_sink_right_right);
                     }
-                    // tick pivot forward
-                    right_pivot = right_idx + 1;
-                } else {
-                    // right pivot past left packet. Do nothing and early return
-                    break;
                 }
-            }
-            if !did_overlap {
-                // left isolate
             }
         }
 
-        loop {
-            let mut left_packet = batch_left.batch[left_pivot];
-            let mut right_packet = batch_right.batch[right_pivot];
-
-            // left centered pivot
-
-
-
-            if left_packet.overlaps(&right_packet) {
-                if left_packet.state_handle != right_packet.state_handle {
-                    // slice.correct_state_handle_if_tombstone(&mut left_packet);
-                    slice.merge_islands(left_packet.state_handle, right_packet.state_handle);
-                }
-                let state = slice.get_mut(right_packet.state_handle);
-                let 
-
-
-                if left_packet.state_handle != right_packet.state_handle {
-                    // left cell might be a tombstone, if it was merged, we need to trace
-                    // until we find a live handle.
-                    let mut left_handle = left_packet.state_handle;
-                    let left_cell = while let InteractionCell::Tombstone(tombstone) = slice.get_mut(left_handle) {
-                        left_handle = tombstone.move_destination;
-                        tombstone.ref_cnt -= 1;
-                        if tombstone.ref_cnt == 0 {
-                        }
-                    }
-                    let left_cell = slice.get_mut(left_packet.state_handle);
-                    let right_cell = slice.get_mut(right_packet.state_handle);
-                    // WARNING: Unintuitive API. First argument is the target cell handle.
-                    // This is necessary because IslandOfInteraction does not store the 
-                    // handle to save space.
-                    slice.merge_islands(left_packet.state_handle, right_packet.state_handle);
-                }
-                // at this point, left cell might be 
-                let cell = slice.get_mut(right_packet.state_handle);
-                let state = slice.get_mut(left_packet.state_handle).unwrap_as_island_or_else(|_| {
-                    // TODO: Make this error nicer
-                    panic!("Expected IslandOfInteraction, but got something else"); 
-                });
-                let left_previous_sink_port = 
-            }
-            break;
-
-        }
-
-
-        for wp in batch.batch {
-            let state = match slice.get_mut(wp.state_handle) {
-                InteractionCell::IslandOfInteraction(state) => state,
-                _cell => {
-                    // TODO: Make this error nicer
-                    panic!("Expected IslandOfInteraction, but got something else"); 
-                }
-            };
-            let sink_mode = state.active_packets.extract(wp.snowflake);
-            let op_handle = state.add_operator(Operator::Dual{
-                node: self.seq,
-                time: wp.time,
-                // these are placeholders. It will be replaced later using set_sink
-                sink: (0, 0),
-            });
-            state.set_sink(sink_mode, op_handle);
-        }
-
-        if let Some(port) = &mut self.sink {
+        if let Some(port) = &mut self.sink_left {
             port.send_batch(WpBatch{
-                start_time: batch.start_time + self.delay,
-                end_time: batch.end_time + self.delay,
-                batch: sink_batch,
-            });
+                start_time,
+                end_time,
+                batch: sink_batch_left,
+            }).unwrap();
         } else {
-            panic!("Unconnected sink is currently UB");
-            // we don't handle this for now. We just let it leak
-            // for wp in sink_batch {
-            //     let state = match slice.get_mut(wp.state_handle) {
-            //         InteractionCell::IslandOfInteraction(state) => state,
-            //         _cell => {
-            //             // TODO: Make this error nicer
-            //             panic!("Expected IslandOfInteraction, but got something else"); 
-            //         }
-            //     };
-            //     let op_handle = state.add_operator(Operator::Lost);
-            //     let sink_mode = state.active_packets.extract(wp.snowflake);
-            //     state.set_sink(sink_mode, op_handle);
-            //     if state
-            // }
+            panic!("Unconnected sink is currently UB (dual left)");
+        }
+
+        if let Some(port) = &mut self.sink_right {
+            port.send_batch(WpBatch{
+                start_time,
+                end_time,
+                batch: sink_batch_right,
+            }).unwrap();
+        } else {
+            panic!("Unconnected sink is currently UB (dual right)");
         }
     }
 }
@@ -264,16 +276,13 @@ impl NodeHandle for DualPortWorkerHandle {
         &self.control
     }
     fn join(self) {
-        self.join_handle.join();
+        self.join_handle.join().unwrap();
     }
 }
 
 impl DualPortWorkerHandle {
     // Human facing API (can be slow). ctx is cloned for now
-    fn set_kraus_operators(&self, ctx: Arc<SimulationContext>, kraus_operators: PhotonicKrausOperators, time: Time) {
-        ctx.operator_record.single.set(self.seq, kraus_operators, time);
-    }
-    fn set_delay(&self, delay: u64, time: Time) {
-        self.schedule_node_control_event(DualPortEvent::SetDelay(delay), time);
+    fn set_scattering_matrix(&self, ctx: Arc<SimulationContext>, scattering_matrix: SMatrix<Complex<f32>, 4, 4>, time: Time) {
+        ctx.operator_record.dual.set(self.seq, scattering_matrix, time);
     }
 }

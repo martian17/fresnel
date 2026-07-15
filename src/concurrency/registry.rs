@@ -22,7 +22,7 @@ impl CellState {
             _ => unreachable!("This is alredy capped to 3 by the bitmap"),
         }
     }
-    fn to_bits(&self) -> u64 {
+    fn to_bits(self) -> u64 {
         match self {
             CellState::Free => 0,
             CellState::Locked => 1,
@@ -40,7 +40,7 @@ pub struct CellStateRegistry {
 
 impl CellStateRegistry {
     pub fn with_capacity(capacity: usize) -> Self {
-        debug_assert!(capacity.is_power_of_two() && capacity % 32 == 0, "State Registry capacity should always be a power of two greater than 32");
+        debug_assert!(capacity.is_power_of_two() && capacity.is_multiple_of(32), "State Registry capacity should always be a power of two greater than 32");
         Self {
             buff: vec![0; capacity/32],
             start_index: 0,
