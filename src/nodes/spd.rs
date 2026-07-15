@@ -1,3 +1,191 @@
+#![allow(unused_imports)]
+use std::sync::mpsc::{sync_channel, channel, Sender, Receiver, SyncSender, SendError, RecvError};
+use std::sync::{Mutex, Condvar, Arc};
+use std::thread;
+use std::collections::BinaryHeap;
+
+use nalgebra::{SMatrix, Complex};
+use smallvec::SmallVec;
+
+use std::sync::mpsc;
+use rayon::prelude::*;
+
+use crate::nodes::core::{
+    WavePacket,
+    WpBatch,
+    TxPort,
+    RxPort,
+    // WorkerHandle,
+    NodeRunner,
+    NodeHandle,
+    NodeWorker,
+    TimedControlEvent,
+    RunnerContext,
+};
+use crate::concurrency::interaction_store::{
+    InteractionStore,
+    InteractionCell,
+    Operator,
+    CollapseResult,
+    WpResult,
+};
+use crate::concurrency::context::{
+    SimulationContext,
+    OpStoreHandle,
+};
+use crate::concurrency::snowflake;
+
+use crate::types::core::{
+    PortAddress,
+    Time,
+    PortId,
+    BatchConstraint,
+    SinkModeLocation,
+    NormalizedTimeTag,
+};
+use crate::types::physics::{
+    PhotonicKrausOperators,
+};
+
+pub type SPDRunner = NodeRunner<SPDWorker>;
+
+pub enum SPDEvent {
+    ConnectTimeTagger(SyncSender<Vec<Time>>)
+}
+
+// models 
+pub struct SPDWorker {
+    tagger_channel: Option<SyncSender<Vec<Time>>>,
+    spd_id: u16
+}
+
+impl NodeWorker for SPDWorker {
+    type CustomControlEvent = SPDEvent;
+    type NodeTemplate = SPDTemplate;
+    type NodeHandle = SPDWorkerHandle;
+
+    fn new(template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
+        Self {
+            tagger_channel: None,
+            spd_id: template.spd_id,
+        }
+    }
+    fn register_operator(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate) -> OpStoreHandle {
+        // NOTE: SPD doesn't (shouldn't) register any operators
+        // So we return a dummy value to conform to the trait shape
+        0
+    }
+    fn handle_connection(&mut self, ctx: RunnerContext<Self>, exit_port_id: PortId, tx_port: TxPort) {
+        panic!("SPD does not have any exit port. Use .connect_time_tagger()");
+    }
+    fn handle_custom_event(&mut self, ctx: RunnerContext<Self>, custom_event: Self::CustomControlEvent) {
+        match custom_event {
+            SPDEvent::ConnectTimeTagger(tagger_channel) => {
+                self.tagger_channel = Some(tagger_channel);
+            },
+        }
+    }
+    fn process_batch(&mut self, ctx: RunnerContext<Self>) {
+        let port = &mut ctx.runner.rx_ports[0];
+        let batch_policy = &ctx.global.config.load().batch;
+        let mut batch = port.get_batch(batch_policy.get_constraint(port.current_time));
+
+        let mut slice = ctx.global.interaction_store.get_states(vec![&mut batch.batch]);
+        let mut sink_batch: Vec<WavePacket> = Vec::new();
+
+        for wp_source in batch.batch.iter() {
+            let state = slice.get_mut(wp_source.state_handle).unwrap_as_island_or_else(|_| {
+                panic!("Expected the cell to be an island");
+            });
+            let source_mode = state.active_packets.extract(wp_source.snowflake);
+            state.operators.push(Operator::SPD{
+                id: self.spd_id,
+                wp_snowflake: wp_source.snowflake,
+                time: wp_source.time,
+                source_modes: [source_mode],
+                sink_modes: [],
+            });
+        }
+
+        let mut rayon_handles = Vec::new();
+        let mut rayon_states = Vec::new();
+        for handle in slice.get_handles().iter() {
+            let cell = slice.get_mut(handle);
+            let state = cell.unwrap_as_island_or_else(|_| {
+                panic!("Expected the cell to be an island");
+            });
+            if state.active_packets.is_empty() {
+                rayon_handles.push(handle);
+                rayon_states.push(state.clone())
+                // *cell = InteractionCell::ComputeWip;
+            }
+        }
+        drop(slice);
+        let mut rayon_slice = ctx.global.interaction_store.get_states_from_raw_handles(&rayon_handles);
+        let rayon_results: Vec<CollapseResult> = rayon_states.par_iter().map(|state|{
+            CollapseResult {
+                packets: state.operators.iter().filter_map(|op| match op {
+                    Operator::SPD{id, time, wp_snowflake, ..} => Some(WpResult::Success{
+                        time: *time,
+                        spd_id: *id,
+                        wp_snowflake: *wp_snowflake,
+                    }),
+                    _ => None,
+                }).collect(),
+            }
+        }).collect();
+        for (result, handle) in rayon_results.into_iter().zip(rayon_handles.iter().copied()) {
+            rayon_slice.set(handle, InteractionCell::Result(result));
+        }
+        drop(rayon_slice);
+
+        // now wait for other threads to finish their results
+        let result = ctx.global.interaction_store.get_collapsed_packets(&batch.batch);
+        println!("Got a batch of {} timetags. time: [{} {}]", batch.len(), batch.start_time, batch.end_time);
+    }
+}
+
+
+pub struct SPDWorkerHandle {
+    pub ports: Vec<TxPort>,
+    pub control: Sender<TimedControlEvent<SPDEvent>>,
+    pub join_handle: std::thread::JoinHandle<()>,
+}
+
+pub struct SPDTemplate {
+    pub spd_id: u16,
+}
+
+impl NodeHandle for SPDWorkerHandle {
+    type CustomControlEvent = SPDEvent;
+    type NodeTemplate = SPDTemplate;
+
+    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
+        Self {
+            ports,
+            control,
+            join_handle,
+        }
+    }
+    fn get_tx_ports(&self) -> &Vec<TxPort>{
+        &self.ports
+    }
+    fn get_control_channel(&self) -> &Sender<TimedControlEvent<Self::CustomControlEvent>> {
+        &self.control
+    }
+    fn join(self) {
+        self.join_handle.join().unwrap();
+    }
+}
+
+impl SPDWorkerHandle {
+    // Human facing API (can be slow). ctx is cloned for now
+    fn connect_time_tagger(&self, ctx: Arc<SimulationContext>, channel: SyncSender<Vec<Time>>) {
+        self.schedule_node_control_event(SPDEvent::ConnectTimeTagger(channel), 0);
+    }
+}
+
+
 // use std::sync::Arc;
 // use std::sync::mpsc::{sync_channel, SyncSender};
 // use std::thread;

@@ -6,13 +6,15 @@ use std::collections::BinaryHeap;
 use std::sync::mpsc;
 use std::f64::consts::PI;
 
-use crate::concurrency::context::SimulationContext;
+use crate::concurrency::context::{
+    SimulationContext,
+    OpStoreHandle,
+};
 
 use crate::types::core::{
     PortAddress,
     Time,
     PortId,
-    NodeId,
     BatchConstraint,
 };
 
@@ -314,7 +316,7 @@ pub trait NodeHandle: Sized {
 
     // user needs to implement this
     // new should register a new operator store
-    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: NodeId, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control_channel: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self;
+    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control_channel: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self;
     fn get_tx_ports(&self) -> &Vec<TxPort>;
     fn get_control_channel(&self) -> &Sender<TimedControlEvent<Self::CustomControlEvent>>;
     fn join(self);
@@ -385,11 +387,11 @@ pub trait NodeWorker: Send + Sized {
     type NodeTemplate;
     type NodeHandle: NodeHandle<CustomControlEvent = Self::CustomControlEvent, NodeTemplate = Self::NodeTemplate>;
 
-    fn new(template: &Self::NodeTemplate, id: NodeId) -> Self;
+    fn new(template: &Self::NodeTemplate, id: OpStoreHandle) -> Self;
     fn handle_connection(&mut self, ctx: RunnerContext<Self>, exit_port_id: PortId, tx_port: TxPort);
     fn handle_custom_event(&mut self, ctx: RunnerContext<Self>, custom_event: Self::CustomControlEvent);
     fn process_batch(&mut self, ctx: RunnerContext<Self>);
-    fn register_operator(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate) -> NodeId;
+    fn register_operator(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate) -> OpStoreHandle;
 
 }
 

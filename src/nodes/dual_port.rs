@@ -24,13 +24,15 @@ use crate::concurrency::interaction_store::{
     InteractionCell,
     Operator,
 };
-use crate::concurrency::context::SimulationContext;
+use crate::concurrency::context::{
+    SimulationContext,
+    OpStoreHandle,
+};
 use crate::concurrency::snowflake;
 
 use crate::types::core::{
     PortAddress,
     Time,
-    NodeId,
     PortId,
     BatchConstraint,
     SinkModeLocation,
@@ -53,7 +55,7 @@ pub enum DualPortEvent {}
 pub struct DualPortWorker {
     sink_left: Option<TxPort>,
     sink_right: Option<TxPort>,
-    seq: NodeId,
+    seq: OpStoreHandle,
 }
 
 impl NodeWorker for DualPortWorker {
@@ -61,14 +63,14 @@ impl NodeWorker for DualPortWorker {
     type NodeTemplate = DualPortTemplate;
     type NodeHandle = DualPortWorkerHandle;
 
-    fn new(template: &Self::NodeTemplate, seq: NodeId) -> Self {
+    fn new(template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
         Self {
             sink_left: None,
             sink_right: None,
             seq,
         }
     }
-    fn register_operator(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate) -> NodeId {
+    fn register_operator(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate) -> OpStoreHandle {
         ctx.operator_record.dual.add(template.scattering_matrix)
     }
     fn handle_connection(&mut self, ctx: RunnerContext<Self>, exit_port_id: PortId, tx_port: TxPort) {
@@ -143,7 +145,7 @@ impl NodeWorker for DualPortWorker {
                     let sink_mode_left = state.register_wavepacket(&wp_sink_left);
                     let sink_mode_right = state.register_wavepacket(&wp_sink_right);
                     state.operators.push(Operator::DualUnivariate{
-                        node: self.seq,
+                        store_handle: self.seq,
                         time: wp_source.time,
                         incidence_port_id: 0,
                         source_modes: [source_mode],
@@ -165,7 +167,7 @@ impl NodeWorker for DualPortWorker {
                     let sink_mode_left = state.register_wavepacket(&wp_sink_left);
                     let sink_mode_right = state.register_wavepacket(&wp_sink_right);
                     state.operators.push(Operator::DualUnivariate{
-                        node: self.seq,
+                        store_handle: self.seq,
                         time: wp_source.time,
                         incidence_port_id: 1,
                         source_modes: [source_mode],
@@ -208,7 +210,7 @@ impl NodeWorker for DualPortWorker {
                         let sink_mode_right_left =  state.register_wavepacket(&wp_sink_right_left);
                         let sink_mode_right_right = state.register_wavepacket(&wp_sink_right_right);
                         state.operators.push(Operator::DualBivariate{
-                            node: self.seq,
+                            store_handle: self.seq,
                             time: ctx.runner.time,
                             packet_indistinguishability: wp_source_left.indistinguishability(wp_source_right),
                             source_modes: [source_mode_left, source_mode_right],
@@ -249,7 +251,7 @@ impl NodeWorker for DualPortWorker {
 pub struct DualPortWorkerHandle {
     pub ports: Vec<TxPort>,
     pub control: Sender<TimedControlEvent<DualPortEvent>>,
-    pub seq: NodeId,// index in the operator store
+    pub seq: OpStoreHandle,// index in the operator store
     pub join_handle: std::thread::JoinHandle<()>,
 }
 
@@ -261,7 +263,7 @@ impl NodeHandle for DualPortWorkerHandle {
     type CustomControlEvent = DualPortEvent;
     type NodeTemplate = DualPortTemplate;
 
-    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: NodeId, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
+    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
         Self {
             ports,
             control,

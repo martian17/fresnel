@@ -24,7 +24,7 @@ pub struct SimulationConfig{
 
 
 
-type OpStoreHandle = u16;
+pub type OpStoreHandle = u16;
 
 // TODO: OpStore currently only serves as a table.
 // However, in the future, we will need to store the past operators, and 

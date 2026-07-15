@@ -12,13 +12,16 @@ use crate::types::core::WrappingIterU32;
 
 use crate::types::core::{
     OpHandle,
-    NodeId,
     PortId,
     SinkModeId,
     WpSnowflake,
     Time,
     SinkModeLocation,
     ModeIndex,
+};
+use crate::util::set::U32OpenAddressSet;
+use crate::concurrency::context::{
+    OpStoreHandle,
 };
 
 
@@ -27,25 +30,25 @@ use crate::types::core::{
 pub enum Operator {
     #[allow(clippy::upper_case_acronyms)]
     EPPS {
-        node: NodeId,
+        store_handle: OpStoreHandle,
         time: Time,
         // todo: these could be possibly compacted to u32
         source_modes: [ModeIndex; 0],
         sink_modes: [ModeIndex; 2],
     },
     Single {
-        node: NodeId,
+        store_handle: OpStoreHandle,
         time: Time,
         source_modes: [ModeIndex; 1],
         sink_modes: [ModeIndex; 1],
     },
     // These represent 2x2 linear compoents
     // The worker thread then queries the actual Kraus oOperator and Scatter Matrix using
-    // (NodeId, time)
+    // (OpStoreHandle, time)
     //
     // 2x2 component with interference. Photon incidence on both ports
     DualBivariate {
-        node: NodeId,
+        store_handle: OpStoreHandle,
         time: Time,
         // superficial similarties of the packets
         // teporal and frequential overlap (unit inner product)
@@ -56,7 +59,7 @@ pub enum Operator {
     },
     // 2x2 component without interference. One port at a time
     DualUnivariate {
-        node: NodeId,
+        store_handle: OpStoreHandle,
         time: Time,
         incidence_port_id: PortId,
         source_modes: [ModeIndex; 1],
@@ -64,7 +67,8 @@ pub enum Operator {
     },
     #[allow(clippy::upper_case_acronyms)]
     SPD {
-        node: NodeId,
+        id: u16,
+        wp_snowflake: u32,
         time: Time,
         source_modes: [ModeIndex; 1],
         sink_modes: [ModeIndex; 0],
@@ -245,21 +249,47 @@ pub struct Tombstone{
 }
 
 #[derive(Clone)]
-enum WpResult {
+pub enum WpResult {
     Empty {
-        slot_handle: u32,
+        wp_snowflake: u32,
     },
     Success {
         time: u64,
-        spd_id: NodeId,
-        slot_handle: u32,
+        spd_id: OpStoreHandle,
+        wp_snowflake: u32,
+    }
+}
+
+impl WpResult {
+    fn wp_snowflake(&self) -> u32 {
+        match self {
+            WpResult::Empty{wp_snowflake} => *wp_snowflake,
+            WpResult::Success{wp_snowflake, ..} => *wp_snowflake,
+        }
     }
 }
 
 #[derive(Clone)]
 pub struct CollapseResult {
     // got some leeway, 20 packets would robably be overkill, but got 512 bytes of space
-    packets: SmallVec<[WpResult; 20]>,
+    pub packets: SmallVec<[WpResult; 20]>,
+}
+
+impl CollapseResult {
+    fn get(&self, wp: &WavePacket) -> Option<Time> {
+        let mut result: Option<&WpResult> = None;
+        for res in self.packets.iter() {
+            if res.wp_snowflake() == wp.snowflake {
+                result = Some(res);
+                break;
+            }
+        }
+        let result = result.unwrap_or_else(||panic!("Wavepacket not found within result"));
+        match result {
+            WpResult::Empty{..} => None,
+            WpResult::Success{..} => Some(wp.time),
+        }
+    }
 }
 
 
@@ -391,6 +421,51 @@ impl InteractionStore {
             moved: Vec::new(),
         }
     }
+    pub fn get_states_from_raw_handles(self: &Arc<Self>, handles: &Vec<u32>) -> InteractionStoreSlice {
+        // first pass: check availability and update the moved states
+        let mut data = self.cvar.wait_while(self.data.lock().unwrap(), |data| {
+            for state_handle in handles.iter() {
+                if data.registry.get(*state_handle) == CellState::Locked {
+                    return true;
+                }
+            }
+            return false;
+        }).unwrap();
+        // second pass: claim the slots by locking them
+        for state_handle in handles.iter() {
+            data.registry.set(*state_handle, CellState::Locked);
+        }
+        InteractionStoreSlice{
+            parent: self.clone(),
+            buff: data.buff.clone(),
+            indices: handles.clone(),
+            retired: Vec::new(),
+            moved: Vec::new(),
+        }
+    }
+    pub fn get_collapsed_packets(self: &Arc<Self>, packets: &Vec<WavePacket>) -> Vec<Time> {
+        let data = self.cvar.wait_while(self.data.lock().unwrap(), |data| {
+            for wp in packets.iter() {
+                let handle = wp.state_handle;
+                if data.registry.get(wp.state_handle) == CellState::Locked {
+                    return true;
+                }
+            }
+            // every slots are unoccupied. Now we check if they are collapsed
+            for wp in packets.iter() {
+                let InteractionCell::Result(collapse_result) = (unsafe { data.buff.unsafely_get_mut(wp.state_handle) }) else {
+                    return true;
+                };
+            }
+            return false;
+        }).unwrap();
+        packets.iter().filter_map(|wp| {
+            let InteractionCell::Result(collapse_result) = (unsafe { data.buff.unsafely_get_mut(wp.state_handle) }) else {
+                panic!("Previous check a few lines ago should have caught this");
+            };
+            collapse_result.get(wp)
+        }).collect()
+    }
 }
 
 // TODO: This part requires more investigation
@@ -486,9 +561,12 @@ impl InteractionStoreSlice {
         //     panic!("Wavepacket does not point to island of interaction, or Tombstone move destination was not an island of interaction");
         // })
     }
-    #[deprecated(note = "slice.handles is no longer guaranteed to contain unique handles. Get start_index provided by create_states")]
-    pub fn get_handles(&self) -> &Vec<u32> {
-        &self.indices
+    pub fn get_handles(&self) -> U32OpenAddressSet {
+        let mut unique_indices = U32OpenAddressSet::new(32);
+        for index in self.indices.iter() {
+            unique_indices.insert(*index);
+        }
+        unique_indices
     }
     pub fn set(&mut self, handle: u32, cell: InteractionCell) {
         unsafe {

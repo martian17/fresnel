@@ -24,13 +24,15 @@ use crate::concurrency::interaction_store::{
     InteractionCell,
     Operator,
 };
-use crate::concurrency::context::SimulationContext;
+use crate::concurrency::context::{
+    SimulationContext,
+    OpStoreHandle,
+};
 use crate::concurrency::snowflake;
 
 use crate::types::core::{
     PortAddress,
     Time,
-    NodeId,
     PortId,
     BatchConstraint,
     SinkModeLocation,
@@ -52,7 +54,7 @@ pub struct SinglePortWorker {
     // which is still not out of the realm of possibility, especially with satellite based
     // communication, so we still use u64 here
     delay: u64,
-    seq: NodeId,
+    seq: OpStoreHandle,
 }
 
 impl NodeWorker for SinglePortWorker {
@@ -60,14 +62,14 @@ impl NodeWorker for SinglePortWorker {
     type NodeTemplate = SinglePortTemplate;
     type NodeHandle = SinglePortWorkerHandle;
 
-    fn new(template: &Self::NodeTemplate, seq: NodeId) -> Self {
+    fn new(template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
         Self {
             sink: None,
             delay: template.delay,
             seq,
         }
     }
-    fn register_operator(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate) -> NodeId {
+    fn register_operator(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate) -> OpStoreHandle {
         ctx.operator_record.single.add(template.kraus_operators.clone())
     }
     fn handle_connection(&mut self, ctx: RunnerContext<Self>, exit_port_id: PortId, tx_port: TxPort) {
@@ -109,7 +111,7 @@ impl NodeWorker for SinglePortWorker {
             let source_mode = state.active_packets.extract(wp_source.snowflake);
             let sink_mode = state.register_wavepacket(&wp_sink);
             state.operators.push(Operator::Single{
-                node: self.seq,
+                store_handle: self.seq,
                 time: wp_source.time,
                 // these are placeholders. It will be replaced later using set_sink
                 source_modes: [source_mode],
@@ -148,7 +150,7 @@ impl NodeWorker for SinglePortWorker {
 pub struct SinglePortWorkerHandle {
     pub ports: Vec<TxPort>,
     pub control: Sender<TimedControlEvent<SinglePortEvent>>,
-    pub seq: NodeId,// index in the operator store
+    pub seq: OpStoreHandle,// index in the operator store
     pub join_handle: std::thread::JoinHandle<()>,
 }
 
@@ -162,7 +164,7 @@ impl NodeHandle for SinglePortWorkerHandle {
     type CustomControlEvent = SinglePortEvent;
     type NodeTemplate = SinglePortTemplate;
 
-    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: NodeId, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
+    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
         Self {
             ports,
             control,

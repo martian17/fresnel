@@ -30,12 +30,14 @@ use crate::concurrency::interaction_store::{
     ActivePacketStore,
     Operator,
 };
-use crate::concurrency::context::SimulationContext;
+use crate::concurrency::context::{
+    SimulationContext,
+    OpStoreHandle,
+};
 
 use crate::types::core::{
     PortAddress,
     Time,
-    NodeId,
     PortId,
     BatchConstraint,
     SinkModeLocation,
@@ -80,7 +82,7 @@ struct EPPSWorker {
     idler_sink: Option<TxPort>,
     pump_period: f64,
     success_probability: f64,
-    seq: NodeId,
+    seq: OpStoreHandle,
     time_frac: f64,
 }
 
@@ -95,7 +97,7 @@ impl NodeWorker for EPPSWorker {
     type NodeTemplate = EPPSTemplate;
     type NodeHandle = EPPSWorkerHandle;
     
-    fn new(template: &Self::NodeTemplate, seq: NodeId) -> Self {
+    fn new(template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
         Self {
             signal_profile: template.signal_profile.clone(),
             idler_profile: template.idler_profile.clone(),
@@ -107,7 +109,7 @@ impl NodeWorker for EPPSWorker {
             seq,
         }
     }
-    fn register_operator(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate) -> NodeId {
+    fn register_operator(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate) -> OpStoreHandle {
         ctx.operator_record.epps.add(template.density_matrix)
     }
     fn handle_connection(&mut self, ctx: RunnerContext<Self>, exit_port_id: PortId, tx_port: TxPort) {
@@ -179,7 +181,7 @@ impl NodeWorker for EPPSWorker {
             let signal_mode = island.register_wavepacket(&signal);
             let idler_mode = island.register_wavepacket(&idler);
             island.operators.push(Operator::EPPS{
-                node: self.seq,
+                store_handle: self.seq,
                 time: signal.time,
                 source_modes: [],
                 sink_modes: [
@@ -219,7 +221,7 @@ struct EPPSWorkerHandle {
     // pub control: Sender<EPPSControlEvent>,
 
     pub control: Sender<TimedControlEvent<EPPSEvent>>,
-    pub seq: NodeId,// index in the operator store
+    pub seq: OpStoreHandle,// index in the operator store
     pub join_handle: std::thread::JoinHandle<()>,
 }
 
@@ -227,7 +229,7 @@ impl NodeHandle for EPPSWorkerHandle {
     type CustomControlEvent = EPPSEvent;
     type NodeTemplate = EPPSTemplate;
 
-    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: NodeId, join_handle: std::thread::JoinHandle<()>, _ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
+    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, _ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
         Self {
             control,
             seq,
