@@ -250,10 +250,10 @@ pub struct ExitPortHandle<'a, T: NodeHandle> {
 }
 
 impl<'a, T: NodeHandle> ExitPortHandle<'a, T> {
-    fn connect(&self, port: EntryPortHandle) {
+    pub fn connect(&self, port: EntryPortHandle) {
         self.schedule_connect(port, 0);
     }
-    fn schedule_connect(&self, port: EntryPortHandle, time: Time) {
+    pub fn schedule_connect(&self, port: EntryPortHandle, time: Time) {
         self.node_handle.get_control_channel().send(NodeControlEvent::Connect{
             exit_port_id: self.exit_port_id,
             tx_port: port.tx,
@@ -403,7 +403,7 @@ pub struct RunnerContext<'a, T: NodeWorker>{
 
 
 impl<T: NodeWorker + 'static> NodeRunner<T> {
-    fn spawn(ctx: Arc<SimulationContext>, rx_port_count: usize, template: T::NodeTemplate) -> T::NodeHandle {
+    pub fn spawn(ctx: Arc<SimulationContext>, rx_port_count: usize, template: T::NodeTemplate) -> T::NodeHandle {
         let id = T::register_operator(ctx.clone(), &template);
         let (tx_ports, rx_ports): (Vec<_>, Vec<_>) = (0..rx_port_count).map(|_| {
             let (tx_raw, rx_raw) = sync_channel::<WpBatch>(3);

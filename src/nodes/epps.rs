@@ -47,6 +47,8 @@ use crate::types::physics::{
 };
 use crate::concurrency::snowflake;
 
+pub type EPPSRunner = NodeRunner<EPPSWorker>;
+
 // represents exponential distribution, which gives the waiting time that a
 // given poisson process succeeds
 // success prob: probability that a pair will be generated at any given pulse
@@ -64,7 +66,7 @@ fn get_next_time_bin_count(success_prob: f64) -> u64 {
 // TODO: Refine the multi-epps sync interraction, which should
 // model the inter-source de-synchronization failure mode and
 // the failure for white rabbit to establish inter-node synchronization
-enum EPPSEvent {
+pub enum EPPSEvent {
     SetWaveProfile {
         port: PortId,
         profile: WaveProfile,
@@ -75,7 +77,7 @@ enum EPPSEvent {
 }
 
 
-struct EPPSWorker {
+pub struct EPPSWorker {
     signal_profile: WaveProfile,
     idler_profile: WaveProfile,
     signal_sink: Option<TxPort>,
@@ -155,6 +157,7 @@ impl NodeWorker for EPPSWorker {
         }
     }
     fn process_batch(&mut self, ctx: RunnerContext<Self>) {
+        println!("EPPS processing batch");
         let start_time = ctx.runner.time;
         let batch_constraint = ctx.global.config.load().batch.get_constraint(ctx.runner.time);
         let mut pairs: Vec<(WavePacket, WavePacket)> = Vec::new();
@@ -216,7 +219,7 @@ impl NodeWorker for EPPSWorker {
     }
 }
 
-struct EPPSWorkerHandle {
+pub struct EPPSWorkerHandle {
     // no optical reception ports, just controls
     // pub control: Sender<EPPSControlEvent>,
 
@@ -281,10 +284,10 @@ impl EPPSWorkerHandle {
 
 
 #[derive(Clone)]
-struct WaveProfile{
-    time_sigma: u32,
-    wavelength: f32,
-    wavelength_sigma: f32,
+pub struct WaveProfile{
+    pub time_sigma: u32,
+    pub wavelength: f32,
+    pub wavelength_sigma: f32,
 }
 
 impl WaveProfile {
@@ -300,12 +303,12 @@ impl WaveProfile {
     }
 }
 
-struct EPPSTemplate {
-    signal_profile: WaveProfile,
-    idler_profile: WaveProfile,
-    pump_frequency: f64,
-    density_matrix: SMatrix<Complex<f32>, 4, 4>,
-    success_probability: f64,
+pub struct EPPSTemplate {
+    pub signal_profile: WaveProfile,
+    pub idler_profile: WaveProfile,
+    pub pump_frequency: f64,
+    pub density_matrix: SMatrix<Complex<f32>, 4, 4>,
+    pub success_probability: f64,
 }
 
 

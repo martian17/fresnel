@@ -328,7 +328,7 @@ pub struct InteractionStore{
 
 
 impl InteractionStore {
-    fn new() -> Self {
+    pub fn new() -> Self {
         let init_buff_size = 512;
         Self {
             data: Mutex::new(StoreData::with_capacity(init_buff_size)),

@@ -156,8 +156,8 @@ pub struct SinglePortWorkerHandle {
 
 pub struct SinglePortTemplate {
     // single term with vacuum identity equals to jones matrix
-    kraus_operators: PhotonicKrausOperators,
-    delay: u64,
+    pub kraus_operators: PhotonicKrausOperators,
+    pub delay: u64,
 }
 
 impl NodeHandle for SinglePortWorkerHandle {

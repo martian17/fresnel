@@ -86,6 +86,7 @@ impl NodeWorker for SPDWorker {
         }
     }
     fn process_batch(&mut self, ctx: RunnerContext<Self>) {
+        println!("SPD processing batch");
         let port = &mut ctx.runner.rx_ports[0];
         let batch_policy = &ctx.global.config.load().batch;
         let mut batch = port.get_batch(batch_policy.get_constraint(port.current_time));

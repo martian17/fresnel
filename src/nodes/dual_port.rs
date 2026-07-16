@@ -256,7 +256,7 @@ pub struct DualPortWorkerHandle {
 }
 
 pub struct DualPortTemplate {
-    scattering_matrix: SMatrix<Complex<f32>, 4, 4>,
+    pub scattering_matrix: SMatrix<Complex<f32>, 4, 4>,
 }
 
 impl NodeHandle for DualPortWorkerHandle {

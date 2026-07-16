@@ -64,6 +64,16 @@ pub struct OperatorRecord {
     pub epps: OpStore<SMatrix<Complex<f32>, 4, 4>>, // 4x4 density matrix
 }
 
+impl OperatorRecord {
+    pub fn new() -> Self {
+        Self {
+            single: OpStore::new(),
+            dual: OpStore::new(),
+            epps: OpStore::new(),
+        }
+    }
+}
+
 // this shall be enclosed in Arc, and all the constituants be thread safe
 pub struct SimulationContext {
     pub interaction_store: Arc<InteractionStore>,

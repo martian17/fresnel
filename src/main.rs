@@ -1,11 +1,53 @@
+#![allow(unused_imports)]
 mod nodes;
 mod concurrency;
 mod types;
 mod util;
 
-use crate::concurrency::interaction_store::InteractionStore;
-
 use std::sync::{Arc};
+use arc_swap::ArcSwap;
+use nalgebra::{
+    SMatrix,
+    SVector,
+    matrix,
+    vector,
+    Complex,
+    ComplexField,
+};
+use crate::concurrency::context::{
+    SimulationContext,
+    SimulationConfig,
+    OperatorRecord,
+};
+use crate::types::core::{
+    Time,
+    BatchPolicy,
+};
+use crate::concurrency::interaction_store::{
+    InteractionStore
+};
+
+use crate::nodes::epps::{
+    EPPSRunner,
+    EPPSTemplate,
+    WaveProfile,
+};
+use crate::nodes::single_port::{
+    SinglePortRunner,
+    SinglePortTemplate,
+};
+use crate::nodes::dual_port::{
+    DualPortRunner,
+    DualPortTemplate,
+};
+use crate::nodes::spd::{
+    SPDRunner,
+    SPDTemplate,
+};
+use crate::nodes::core::{
+    NodeHandle,
+};
+
 
 
 // TODO: multi threaded store to get the operators (Original density matrix from EPPS, Kraus and S-Matrix)
@@ -34,10 +76,66 @@ use std::sync::{Arc};
 //     interaction_store: Arc<InteractionStore>,
 //     quantum_operator_context: QuantumOperatorContext,
 // }
-// 
+
+// pub fn outer_product<T, const D: usize>(v: &SVector<T, D>) -> SMatrix<T, D, D>
+// where
+//     T: ComplexField,
+// {
+//     v * v.adjoint()
+// }
+pub fn outer_product<T, const D: usize>(v: SVector<T, D>) -> SMatrix<T, D, D>
+where
+    T: ComplexField,
+{
+    &v * v.adjoint()
+}
+
 fn main() {
     // let interaction_store = Arc::new(InteractionStore::new());
 
+    // TODO: Make a more human friendly context initialization interface
+    let context = Arc::from(SimulationContext {
+        interaction_store: Arc::from(InteractionStore::new()),
+        config: ArcSwap::from_pointee(SimulationConfig {
+            batch: BatchPolicy{
+                period: 20_000_000,
+                max_size: 200,
+            }}),
+        operator_record: OperatorRecord::new(),
+    });
+    let epps = EPPSRunner::spawn(context.clone(), 0, EPPSTemplate{
+        signal_profile: WaveProfile{
+            time_sigma: 150,
+            wavelength: 1550.0,
+            // TODO: Find a typical wavelength $\sigma$
+            wavelength_sigma: 1.0,
+        },
+        idler_profile: WaveProfile{
+            time_sigma: 150,
+            wavelength: 1550.0,
+            wavelength_sigma: 1.0,
+        },
+        pump_frequency: 1.0E+9,
+        density_matrix: outer_product(vector![Complex::ZERO, Complex::ONE, Complex::ONE, Complex::ZERO]),
+        success_probability: 0.01,// 1% success rate results in 1.0E7 generations per second
+    });
+    // NOTE: in moonshot projects we seem to be using id 0 for special purposes, so starting the ID
+    // from 1
+    let spd_1 = SPDRunner::spawn(context.clone(), 1, SPDTemplate {
+        spd_id: 1,
+    });
+    let spd_2 = SPDRunner::spawn(context.clone(), 1, SPDTemplate {
+        spd_id: 2,
+    });
+    epps.exit_port(0).connect(spd_1.entry_port(0));
+    epps.exit_port(1).connect(spd_1.entry_port(0));
+    spd_1.start();
+    spd_2.start();
+    epps.start();
+
+    epps.join();
+    spd_1.join();
+    spd_2.join();
 
 }
 
