@@ -591,6 +591,7 @@ impl InteractionStoreSlice {
         for (packet_id, mode_idx) in donor.active_packets.active_packets.iter() {
             recipient.active_packets.add(*packet_id, mode_idx + offset);
         }
+        recipient.mode_max += donor.mode_max;
         *donor_cell = InteractionCell::Tombstone(Tombstone {
             ref_cnt: donor.active_packets.len(),
             move_destination: recipient_handle,
