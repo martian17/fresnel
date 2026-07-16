@@ -157,7 +157,7 @@ impl NodeWorker for EPPSWorker {
         }
     }
     fn process_batch(&mut self, ctx: RunnerContext<Self>) {
-        println!("EPPS processing batch");
+        // println!("EPPS processing batch");
         let start_time = ctx.runner.time;
         let batch_constraint = ctx.global.config.load().batch.get_constraint(ctx.runner.time);
         let mut pairs: Vec<(WavePacket, WavePacket)> = Vec::new();

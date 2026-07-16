@@ -53,10 +53,15 @@ pub enum SPDEvent {
     ConnectTimeTagger(SyncSender<Vec<Time>>)
 }
 
-// models 
+// models
 pub struct SPDWorker {
     tagger_channel: Option<SyncSender<Vec<Time>>>,
-    spd_id: u16
+    spd_id: u16,
+    // wall-clock throughput instrumentation; read by the monitor thread in main
+    packet_counter: Arc<std::sync::atomic::AtomicU64>,
+    // latest simulated time (ps) seen by this SPD; lets the monitor compute
+    // simulation speed as a fraction of real time
+    sim_time_ps: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl NodeWorker for SPDWorker {
@@ -68,6 +73,8 @@ impl NodeWorker for SPDWorker {
         Self {
             tagger_channel: None,
             spd_id: template.spd_id,
+            packet_counter: template.packet_counter.clone(),
+            sim_time_ps: template.sim_time_ps.clone(),
         }
     }
     fn register_operator(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate) -> OpStoreHandle {
@@ -86,10 +93,11 @@ impl NodeWorker for SPDWorker {
         }
     }
     fn process_batch(&mut self, ctx: RunnerContext<Self>) {
-        println!("SPD processing batch");
         let port = &mut ctx.runner.rx_ports[0];
         let batch_policy = &ctx.global.config.load().batch;
         let mut batch = port.get_batch(batch_policy.get_constraint(port.current_time));
+        self.packet_counter.fetch_add(batch.batch.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        self.sim_time_ps.store(batch.end_time, std::sync::atomic::Ordering::Relaxed);
 
         let mut slice = ctx.global.interaction_store.get_states(vec![&mut batch.batch]);
         let mut sink_batch: Vec<WavePacket> = Vec::new();
@@ -142,7 +150,7 @@ impl NodeWorker for SPDWorker {
 
         // now wait for other threads to finish their results
         let result = ctx.global.interaction_store.get_collapsed_packets(&batch.batch);
-        println!("Got a batch of {} timetags. time: [{} {}]", batch.len(), batch.start_time, batch.end_time);
+        // println!("Got a batch of {} timetags. time: [{} {}]", batch.len(), batch.start_time, batch.end_time);
     }
 }
 
@@ -155,6 +163,8 @@ pub struct SPDWorkerHandle {
 
 pub struct SPDTemplate {
     pub spd_id: u16,
+    pub packet_counter: Arc<std::sync::atomic::AtomicU64>,
+    pub sim_time_ps: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl NodeHandle for SPDWorkerHandle {
