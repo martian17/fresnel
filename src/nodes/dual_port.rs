@@ -104,7 +104,7 @@ impl NodeWorker for DualPortWorker {
         let batch_constraint = batch_policy.get_constraint(left_time.min(right_time));
 
         let mut left_batch = left_port.get_batch(batch_constraint.clone());
-        let mut right_batch = left_port.get_batch(batch_constraint.clone());
+        let mut right_batch = right_port.get_batch(batch_constraint.clone());
         let start_time = left_batch.start_time.min(right_batch.start_time);
         let end_time = left_batch.end_time.min(right_batch.end_time);
 
