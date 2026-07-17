@@ -607,14 +607,17 @@ impl Drop for InteractionStoreSlice {
         for i in self.indices.iter().copied() {
             data.registry.set(i, CellState::Free);
         }
+        // Handle move and retire. These should refer to self.buff, and
+        // the parent.data.buff should only be touched in the moved branch
+        // at last.
         for moved_handle in self.moved.iter().copied() {
-            let InteractionCell::Tombstone(tombstone) = (unsafe { data.buff.unsafely_get_mut(moved_handle) }) else {
+            let InteractionCell::Tombstone(tombstone) = (unsafe { self.buff.unsafely_get_mut(moved_handle) }) else {
                 panic!("InteractionStore data integrity fault: moved handle must contain a tombstone");
             };
             if tombstone.ref_cnt == 0 {
                 data.registry.set(moved_handle, CellState::Retired);
                 unsafe {
-                    (*data.buff.cell_ptr(moved_handle)).assume_init_drop();
+                    (*self.buff.cell_ptr(moved_handle)).assume_init_drop();
                 }
             } else {
                 data.registry.set(moved_handle, CellState::Moved);
