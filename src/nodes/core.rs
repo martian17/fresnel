@@ -90,12 +90,12 @@ pub struct WpBatch {
 
 impl WpBatch {
     pub fn push(&mut self, wp: WavePacket) {
-        // wp is assumed to be older than the last packet of the batch
+        // wp is assumed to be older or equally as old as the last packet of the batch
         debug_assert!(
         if let Some(last_wp) = self.batch.last() {
-            wp.leading_edge() > last_wp.leading_edge()
+            wp.leading_edge() >= last_wp.leading_edge()
         } else {
-            wp.leading_edge() > self.end_time
+            wp.leading_edge() >= self.end_time
         }, "Wave packet to be pushed is not older than the last packet or the end time of the batch");
         self.end_time = wp.leading_edge();
         self.batch.push(wp);
