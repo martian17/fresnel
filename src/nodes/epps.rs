@@ -196,6 +196,8 @@ impl NodeWorker for EPPSWorker {
             signal_packets.push(signal);
             idler_packets.push(idler);
         }
+        drop(slice);
+
         if let Some(signal_sink) = &mut self.signal_sink {
             signal_sink.send_batch(WpBatch{
                 start_time,

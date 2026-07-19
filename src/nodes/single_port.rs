@@ -118,6 +118,7 @@ impl NodeWorker for SinglePortWorker {
             });
             sink_batch.push(wp_sink);
         }
+        drop(slice);
 
         if let Some(port) = &mut self.sink {
             port.send_batch(WpBatch{

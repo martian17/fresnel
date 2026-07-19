@@ -240,6 +240,7 @@ impl NodeWorker for DualPortWorker {
                 *early_index += 1;
             }
         }
+        drop(slice);
 
         if let Some(port) = &mut self.sink_left {
             port.send_batch(WpBatch{
