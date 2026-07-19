@@ -28,12 +28,13 @@ pub fn mock_collapse(island: &IslandOfInteraction) -> CollapseResult {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum MonotonicMapCell<T>{
     Data(T),
     Moved(u16),
 }
 
+#[derive(Debug)]
 struct MonotonicMap<T>{
     data: Vec<MonotonicMapCell<T>>,
 }
@@ -72,7 +73,7 @@ impl<T: Clone> MonotonicMap<T>{
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Photon{
     Single,
     Vac,
@@ -93,7 +94,7 @@ impl Photon {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum MonteCarloOperator{
     Single {
         source: ModeIndex,
@@ -123,7 +124,7 @@ enum MonteCarloOperator{
 
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct MultiModeMap{
     source_photons: Vec<Option<Photon>>,
     mode_map: Vec<(ModeIndex, ModeIndex, ModeIndex)>,
@@ -176,8 +177,7 @@ pub fn collapse(island: &IslandOfInteraction) -> CollapseResult {
         packets: SmallVec::new(),
     };
     let mut operators = MonotonicMap::<MonteCarloOperator>::new();
-    //: Vec<MonteCarloOperator> = Vec::new();
-    let mut modes: Vec<u16> = (0..island.mode_max).map(|_|u16::MAX).collect(); // maps mode index to operator index
+    let mut mode_operator_map: Vec<u16> = (0..island.mode_max).map(|_|u16::MAX).collect(); // maps mode index to operator index
     
     let mut active_modes: Vec<(u16, Photon)> = Vec::new();
     for op in island.operators.iter() {
@@ -187,15 +187,15 @@ pub fn collapse(island: &IslandOfInteraction) -> CollapseResult {
                 active_modes.push((sink_modes[1], Photon::Single));
             },
             Operator::Single {source_modes, sink_modes, ..} => {
-                modes[source_modes[0] as usize] = operators.add(MonteCarloOperator::Single{
+                mode_operator_map[source_modes[0] as usize] = operators.add(MonteCarloOperator::Single{
                     source: source_modes[0],
                     sink: sink_modes[0],
                 });
             },
             Operator::DualBivariate {source_modes, sink_modes, packet_indistinguishability, ..} => {
                 // this one could be multimap
-                let mode_1 = modes[source_modes[0] as usize];
-                let mode_2 = modes[source_modes[1] as usize];
+                let mode_1 = mode_operator_map[source_modes[0] as usize];
+                let mode_2 = mode_operator_map[source_modes[1] as usize];
                 if mode_1 != u16::MAX {
                     let present_operator_1 = operators.get(mode_1);
                     match present_operator_1 {
@@ -235,7 +235,7 @@ pub fn collapse(island: &IslandOfInteraction) -> CollapseResult {
                             _ => unreachable!("unreachable")
                         }
                     } else {
-                        modes[source_modes[1] as usize] = mode_1;
+                        mode_operator_map[source_modes[1] as usize] = mode_1;
                     }
                 } else if mode_2 != u16::MAX {
                     let present_operator_2 = operators.get(mode_2);
@@ -254,7 +254,7 @@ pub fn collapse(island: &IslandOfInteraction) -> CollapseResult {
                         },
                         _ => unreachable!("unreachable")
                     }
-                    modes[source_modes[0] as usize] = mode_2;
+                    mode_operator_map[source_modes[0] as usize] = mode_2;
                 } else {
                     // no collision, phew.
                     let handle = operators.add(MonteCarloOperator::DoubleInterfering{
@@ -263,18 +263,18 @@ pub fn collapse(island: &IslandOfInteraction) -> CollapseResult {
                         sinks: *sink_modes,
                         indistinguishability: *packet_indistinguishability,
                     });
-                    modes[source_modes[0] as usize] = handle;
-                    modes[source_modes[1] as usize] = handle;
+                    mode_operator_map[source_modes[0] as usize] = handle;
+                    mode_operator_map[source_modes[1] as usize] = handle;
                 }
             },
             Operator::DualUnivariate {source_modes, sink_modes, ..} => {
-                modes[source_modes[0] as usize] = operators.add(MonteCarloOperator::Double{
+                mode_operator_map[source_modes[0] as usize] = operators.add(MonteCarloOperator::Double{
                     source: source_modes[0],
                     sinks: [sink_modes[0], sink_modes[1]],
                 });
             },
             Operator::SPD {source_modes, sink_modes, wp_snowflake, id, time, ..} => {
-                modes[source_modes[0] as usize] = operators.add(MonteCarloOperator::SPD{
+                mode_operator_map[source_modes[0] as usize] = operators.add(MonteCarloOperator::SPD{
                     id: *id,
                     time: *time,
                     source: source_modes[0],
@@ -282,16 +282,23 @@ pub fn collapse(island: &IslandOfInteraction) -> CollapseResult {
                 });
             },
             Operator::Dump {source_modes, sink_modes, ..} => {
-                modes[source_modes[0] as usize] = operators.add(MonteCarloOperator::Dump{
+                mode_operator_map[source_modes[0] as usize] = operators.add(MonteCarloOperator::Dump{
                     source: source_modes[0],
                 });
             },
         }
     }
 
+    for i in mode_operator_map.iter() {
+        if *i == u16::MAX {
+            println!("MAX detected!!");
+            println!("{:?}, {:?}, {:?}, {:?}", island, operators, mode_operator_map, active_modes);
+        }
+    }
+
     // all right, now we've constructed mode -> operators map
     while let Some((mode, photon)) = active_modes.pop() {
-        match operators.get(mode) {
+        match operators.get(mode_operator_map[mode as usize]) {
             MonteCarloOperator::Single {source, sink } => {
                 active_modes.push((*sink, photon));
             },

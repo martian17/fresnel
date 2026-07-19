@@ -93,6 +93,7 @@ impl NodeWorker for SPDWorker {
         }
     }
     fn process_batch(&mut self, ctx: RunnerContext<Self>) {
+        println!("SPD {} processing batch", self.spd_id);
         let port = &mut ctx.runner.rx_ports[0];
         let batch_policy = &ctx.global.config.load().batch;
         let mut batch = port.get_batch(batch_policy.get_constraint(port.current_time));
@@ -100,13 +101,16 @@ impl NodeWorker for SPDWorker {
         self.sim_time_ps.store(batch.end_time, std::sync::atomic::Ordering::Relaxed);
 
         let mut slice = ctx.global.interaction_store.get_states(vec![&mut batch.batch]);
-        let mut sink_batch: Vec<WavePacket> = Vec::new();
 
         for wp_source in batch.batch.iter() {
             let state = slice.get_mut(wp_source.state_handle).unwrap_as_island_or_else(|_| {
                 panic!("Expected the cell to be an island");
             });
-            let source_mode = state.extract_wavepacket(&wp_source);
+            // NOTE: Do not extract
+            // island should keep the active packets in case it gets merged or moved.
+            // let source_mode = state.extract_wavepacket(&wp_source);
+            let source_mode = state.get_wavepacket_mode(wp_source);
+            state.terminated_packet_count += 1;
             state.operators.push(Operator::SPD{
                 id: self.spd_id,
                 wp_snowflake: wp_source.snowflake,
@@ -123,9 +127,9 @@ impl NodeWorker for SPDWorker {
             let state = cell.unwrap_as_island_or_else(|_| {
                 panic!("Expected the cell to be an island");
             });
-            if state.has_no_active_packets() {
+            if state.is_collapse_ready() {
                 rayon_handles.push(handle);
-                rayon_states.push(state.clone())
+                rayon_states.push(state.clone());
                 // *cell = InteractionCell::ComputeWip;
             }
         }
@@ -152,9 +156,13 @@ impl NodeWorker for SPDWorker {
         }
         drop(rayon_slice);
 
+        println!("SPD {} rayon done", self.spd_id);
+
         // now wait for other threads to finish their results
-        let result = ctx.global.interaction_store.claim_collapsed_packets(&batch.batch);
+        let result = ctx.global.interaction_store.claim_collapsed_packets(&mut batch.batch);
         // println!("Got a batch of {} timetags. time: [{} {}]", batch.len(), batch.start_time, batch.end_time);
+        //
+        println!("SPD {} all done", self.spd_id);
     }
 }
 

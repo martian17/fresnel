@@ -140,6 +140,9 @@ impl NodeWorker for DualPortWorker {
                 slice.correct_state_handle_if_tombstone(early);
                 for i in (*late_index)..late_batch.len() {
                     let late = late_batch.get_mut(i).unwrap();
+                    if !early.overlaps(late) {
+                        break;
+                    }
                     slice.correct_state_handle_if_tombstone(late);
                     if early.state_handle != late.state_handle {
                         // merge late to early
@@ -172,6 +175,7 @@ impl NodeWorker for DualPortWorker {
                 let sink_left_wp = source_wp.clone().set_snowflake();
                 let sink_right_wp = source_wp.clone().set_snowflake();
 
+                slice.correct_state_handle_if_tombstone(source_wp);
                 let state = slice.get_mut(source_wp.state_handle).unwrap_as_island_or_else(|_| {
                     panic!("Expected island of interaction");
                 });
@@ -189,23 +193,28 @@ impl NodeWorker for DualPortWorker {
         {
             let mut left_index = 0;
             let mut right_index = 0;
+            let mut left_high_watermark = 0;
+            let mut right_high_watermark = 0; 
             loop {
                 let left = left_batch.get_mut(left_index);
                 let right = right_batch.get_mut(right_index);
-                let (early_batch, late_batch, early_index, late_index, mode_map_early, mode_map_late, incident_port) = if left.is_none() && right.is_none() {
+                let (early_batch, late_batch, early_index, late_index, early_high_watermark, late_high_watermark, mode_map_early, mode_map_late, incident_port) = if left.is_none() && right.is_none() {
                     break;
                 } else if left.is_some_and(|left| right.is_none_or(|right| left.time <= right.time)) {
-                    (&mut left_batch, &mut right_batch, &mut left_index, &mut right_index, &mut mode_map_left, &mut mode_map_right, 0)
+                    (&mut left_batch, &mut right_batch, &mut left_index, &mut right_index, &mut left_high_watermark, &mut right_high_watermark, &mut mode_map_left, &mut mode_map_right, 0)
                 } else {
-                    (&mut right_batch, &mut left_batch, &mut right_index, &mut left_index, &mut mode_map_right, &mut mode_map_left, 1)
+                    (&mut right_batch, &mut left_batch, &mut right_index, &mut left_index, &mut right_high_watermark, &mut left_high_watermark, &mut mode_map_right, &mut mode_map_left, 1)
                 };
                 let early = early_batch.get_mut(*early_index).unwrap();
                 let state = slice.get_mut(early.state_handle).unwrap_as_island_or_else(|_| {
                     panic!("Every islands should have been merged in the previous pass.");
                 });
-                let mut is_univariate = true;
+                let mut is_univariate = early_high_watermark <= early_index;
                 for i in (*late_index)..late_batch.len() {
                     let late = late_batch.get_mut(i).unwrap();
+                    if !early.overlaps(late) {
+                        break;
+                    }
                     let (early_src, early_left, early_right) = mode_map_early[*early_index];
                     let (late_src, late_left, late_right) = mode_map_late[*late_index];
                     is_univariate = false;
@@ -216,6 +225,7 @@ impl NodeWorker for DualPortWorker {
                         source_modes: [early_src, late_src],
                         sink_modes: [early_left, early_right, late_left, late_right],
                     });
+                    *late_high_watermark = i+1;
                 }
                 if is_univariate {
                     let (early_src, early_left, early_right) = mode_map_early[*early_index];

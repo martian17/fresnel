@@ -291,6 +291,7 @@ fn entanglement_swap(){
 
 fn main() {
     entanglement_swap();
+    // simple_epps_2spd();
 }
 
 

@@ -173,6 +173,7 @@ pub struct IslandOfInteraction {
     active_packets: ActivePacketStore,
     //SmallVec<[(u32, OpHandle, u8); 8]>
     pub mode_max: u16,// mode_index < mode_max
+    pub terminated_packet_count: u8,
 }
 
 // if active packets becomes 0, we dispatch 
@@ -184,6 +185,7 @@ impl IslandOfInteraction {
             operators: SmallVec::new(),
             active_packets: ActivePacketStore::new(),
             mode_max: 0,
+            terminated_packet_count: 0,
         }
     }
     // pub fn set_sink(&mut self, sink_mode: SinkModeLocation, op_handle: OpHandle) {
@@ -204,8 +206,14 @@ impl IslandOfInteraction {
     pub fn extract_wavepacket(&mut self, wp: &WavePacket) -> ModeIndex {
         self.active_packets.extract(wp.snowflake)
     }
+    pub fn get_wavepacket_mode(&self, wp: &WavePacket) -> ModeIndex {
+        self.active_packets.get(wp.snowflake)
+    }
     pub fn has_no_active_packets(&self) -> bool {
         self.active_packets.is_empty()
+    }
+    pub fn is_collapse_ready(&self) -> bool {
+        self.active_packets.len() == self.terminated_packet_count
     }
 }
 
@@ -262,7 +270,7 @@ pub struct Tombstone{
     move_destination: u32,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum WpResult {
     Empty {
         wp_snowflake: u32,
@@ -283,7 +291,7 @@ impl WpResult {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CollapseResult {
     // got some leeway, 20 packets would robably be overkill, but got 512 bytes of space
     pub packets: SmallVec<[WpResult; 20]>,
@@ -473,15 +481,38 @@ impl InteractionStore {
             moved: Vec::new(),
         }
     }
-    pub fn claim_collapsed_packets(self: &Arc<Self>, packets: &Vec<WavePacket>) -> Vec<Time> {
+    pub fn claim_collapsed_packets(self: &Arc<Self>, packets: &mut Vec<WavePacket>) -> Vec<Time> {
         let mut data = self.cvar.wait_while(self.data.lock().unwrap(), |data| {
-            for wp in packets.iter() {
-                let handle = wp.state_handle;
+            // println!("trying to claim data");
+            for wp in packets.iter_mut() {
+                // check if moved
+                // common case skips over this part
+                // this is necessary so that reserved states don't accidentally contain
+                // tombstone which could redirect the consumer to unreserved section of memory
+                while data.registry.get(wp.state_handle) == CellState::Moved {
+                    let InteractionCell::Tombstone(tombstone) = (unsafe { data.buff.unsafely_get_mut(wp.state_handle) }) else {
+                        panic!("InteractionStore data integrity fault: registry indicates tombstone, but found something else");
+                    };
+                    tombstone.ref_cnt -= 1;
+                    let move_destination = tombstone.move_destination;
+                    if tombstone.ref_cnt == 0 {
+                        data.registry.set(wp.state_handle, CellState::Retired);
+                        unsafe {
+                            (*data.buff.cell_ptr(wp.state_handle)).assume_init_drop();
+                        }
+                    }
+                    // now the tombstone is dropped, so using a copied value
+                    // loops to the next iteration to check if it's still moved
+                    wp.state_handle = move_destination;
+                }
+                // sanity check. At this point it should not be retired
+                debug_assert!(data.registry.get(wp.state_handle) != CellState::Retired);
                 if data.registry.get(wp.state_handle) == CellState::Locked {
+                    // if true, then we loop all over again
                     return true;
                 }
             }
-            // every slots are unoccupied. Now we check if they are collapsed
+            // every slots are accessible. Now we check if they are collapsed
             for wp in packets.iter() {
                 let InteractionCell::Result(collapse_result) = (unsafe { data.buff.unsafely_get_mut(wp.state_handle) }) else {
                     return true;
@@ -626,6 +657,7 @@ impl InteractionStoreSlice {
             recipient.active_packets.add(*packet_id, mode_idx + offset);
         }
         recipient.mode_max += donor.mode_max;
+        recipient.terminated_packet_count += donor.terminated_packet_count;
         *donor_cell = InteractionCell::Tombstone(Tombstone {
             ref_cnt: donor.active_packets.len(),
             move_destination: recipient_handle,
