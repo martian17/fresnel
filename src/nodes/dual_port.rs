@@ -172,10 +172,10 @@ impl NodeWorker for DualPortWorker {
                     (&mut right_batch, &mut left_batch, &mut right_index, &mut left_index, &mut mode_map_right)
                 };
                 let source_wp = early_batch.get_mut(*early_index).unwrap();
+                slice.correct_state_handle_if_tombstone(source_wp);
                 let sink_left_wp = source_wp.clone().set_snowflake();
                 let sink_right_wp = source_wp.clone().set_snowflake();
 
-                slice.correct_state_handle_if_tombstone(source_wp);
                 let state = slice.get_mut(source_wp.state_handle).unwrap_as_island_or_else(|_| {
                     panic!("Expected island of interaction");
                 });
