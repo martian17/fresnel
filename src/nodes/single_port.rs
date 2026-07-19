@@ -12,7 +12,6 @@ use crate::nodes::core::{
     WpBatch,
     TxPort,
     RxPort,
-    // WorkerHandle,
     NodeRunner,
     NodeHandle,
     NodeWorker,

@@ -41,13 +41,6 @@ use crate::types::physics::{
     PhotonicKrausOperators,
 };
 use crate::util::set::U32OpenAddressSet;
-use crate::nodes::dual_port_iterator::{
-    DualPortPairingIterator,
-    DualPortPairing,
-    DualPortIterator,
-    DualPortCluster,
-    PhotonicCluster,
-};
 
 pub type DualPortRunner = NodeRunner<DualPortWorker>;
 
