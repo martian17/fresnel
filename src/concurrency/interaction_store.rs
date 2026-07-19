@@ -26,7 +26,7 @@ use crate::concurrency::context::{
 
 
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Operator {
     #[allow(clippy::upper_case_acronyms)]
     EPPS {
@@ -166,7 +166,7 @@ impl Operator {
 
 // parameter tuned to be packed in 512 bytes
 // further tuning may be necessary specific to experiments
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct IslandOfInteraction {
     pub operators: SmallVec<[Operator; 13]>,
     // (wavepacket id, operator index, operator exit port identification)
@@ -209,7 +209,7 @@ impl IslandOfInteraction {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct ActivePacketStore {
     active_packets: SmallVec<[(WpSnowflake, ModeIndex); 8]>,
 }
