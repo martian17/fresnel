@@ -216,7 +216,7 @@ impl NodeWorker for DualPortWorker {
                         break;
                     }
                     let (early_src, early_left, early_right) = mode_map_early[*early_index];
-                    let (late_src, late_left, late_right) = mode_map_late[*late_index];
+                    let (late_src, late_left, late_right) = mode_map_late[i];
                     is_univariate = false;
                     state.operators.push(Operator::DualBivariate{
                         store_handle: self.seq,

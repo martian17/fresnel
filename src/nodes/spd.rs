@@ -112,7 +112,6 @@ impl NodeWorker for SPDWorker {
         }
     }
     fn process_batch(&mut self, ctx: RunnerContext<Self>) {
-        println!("SPD {} processing batch", self.spd_id);
         let port = &mut ctx.runner.rx_ports[0];
         let batch_policy = &ctx.global.config.load().batch;
         let mut batch = port.get_batch(batch_policy.get_constraint(port.current_time));
@@ -174,13 +173,10 @@ impl NodeWorker for SPDWorker {
         }
         drop(rayon_slice);
 
-        println!("SPD {} rayon done", self.spd_id);
-
         // now wait for other threads to finish their results
         if let Some(channel) = &self.claimer_channel {
             channel.send(batch.batch).unwrap();
         }
-        println!("SPD {} all done", self.spd_id);
     }
 }
 
