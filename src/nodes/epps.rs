@@ -27,7 +27,6 @@ use crate::concurrency::interaction_store::{
     InteractionStore,
     InteractionCell,
     IslandOfInteraction,
-    ActivePacketStore,
     Operator,
 };
 use crate::concurrency::context::{
@@ -398,7 +397,7 @@ pub struct EPPSTemplate {
 //                         panic!("Expected IslandOfInteraction, but got something else"); 
 //                     }
 //                 };
-//                 let sink_mode = state.active_packets.extract(wp.snowflake);
+//                 let sink_mode = state.extract_wavepacket(&wp);
 //                 let op_handle = state.add_operator(Operator::Single{
 //                     node: self.id,
 //                     time: wp.time,
@@ -425,7 +424,7 @@ pub struct EPPSTemplate {
 //                 //         }
 //                 //     };
 //                 //     let op_handle = state.add_operator(Operator::Lost);
-//                 //     let sink_mode = state.active_packets.extract(wp.snowflake);
+//                 //     let sink_mode = state.extract_wavepacket(&wp);
 //                 //     state.set_sink(sink_mode, op_handle);
 //                 //     if state
 //                 // }

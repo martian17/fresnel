@@ -108,7 +108,7 @@ impl NodeWorker for SinglePortWorker {
                 state_handle: wp_source.state_handle,
                 snowflake: snowflake::next_u32(),
             };
-            let source_mode = state.active_packets.extract(wp_source.snowflake);
+            let source_mode = state.extract_wavepacket(&wp_source);
             let sink_mode = state.register_wavepacket(&wp_sink);
             state.operators.push(Operator::Single{
                 store_handle: self.seq,
@@ -138,7 +138,7 @@ impl NodeWorker for SinglePortWorker {
             //         }
             //     };
             //     let op_handle = state.add_operator(Operator::Lost);
-            //     let sink_mode = state.active_packets.extract(wp.snowflake);
+            //     let sink_mode = state.extract_wavepacket(&wp);
             //     state.set_sink(sink_mode, op_handle);
             //     if state
             // }

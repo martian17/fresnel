@@ -170,7 +170,7 @@ impl Operator {
 pub struct IslandOfInteraction {
     pub operators: SmallVec<[Operator; 13]>,
     // (wavepacket id, operator index, operator exit port identification)
-    pub active_packets: ActivePacketStore,
+    active_packets: ActivePacketStore,
     //SmallVec<[(u32, OpHandle, u8); 8]>
     mode_max: u16,// mode_index < mode_max
 }
@@ -201,20 +201,26 @@ impl IslandOfInteraction {
         self.mode_max += 1;
         mode_index
     }
+    pub fn extract_wavepacket(&mut self, wp: &WavePacket) -> ModeIndex {
+        self.active_packets.extract(wp.snowflake)
+    }
+    pub fn has_no_active_packets(&self) -> bool {
+        self.active_packets.is_empty()
+    }
 }
 
 #[derive(Clone)]
-pub struct ActivePacketStore {
+struct ActivePacketStore {
     active_packets: SmallVec<[(WpSnowflake, ModeIndex); 8]>,
 }
 
 impl ActivePacketStore {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             active_packets: SmallVec::new(),
         }
     }
-    pub fn extract(&mut self, packet_id: WpSnowflake) -> ModeIndex {
+    fn extract(&mut self, packet_id: WpSnowflake) -> ModeIndex {
         let mut match_index = self.active_packets.len();
         for i in 0..self.active_packets.len() {
             if self.active_packets[i].0 == packet_id {
@@ -229,13 +235,21 @@ impl ActivePacketStore {
         let removed = self.active_packets.remove(match_index);
         removed.1
     }
-    pub fn add(&mut self, packet_id: WpSnowflake, mode_id: ModeIndex){
+    fn get(&self, packet_id: WpSnowflake) -> ModeIndex {
+        for (snowflake, mode_idx) in self.active_packets.iter() {
+            if *snowflake == packet_id {
+                return *mode_idx;
+            }
+        }
+        panic!("ActivePacketStore::get: Mode index not found!");
+    }
+    fn add(&mut self, packet_id: WpSnowflake, mode_id: ModeIndex){
         self.active_packets.push((packet_id, mode_id));
     }
-    pub fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.active_packets.is_empty()
     }
-    pub fn len(&self) -> u8 {
+    fn len(&self) -> u8 {
         self.active_packets.len() as u8
     }
 }

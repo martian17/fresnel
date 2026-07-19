@@ -17,6 +17,8 @@ use crate::types::core::{
     PortId,
     BatchConstraint,
 };
+use crate::concurrency::snowflake;
+
 
 #[derive(Clone, Debug)]
 pub struct WavePacket {
@@ -79,6 +81,10 @@ impl WavePacket {
 
         prefactor * exponent.exp()
     }
+    pub fn set_snowflake(mut self) -> Self {
+        self.snowflake = snowflake::next_u32();
+        self
+    }
 }
 
 #[derive(Clone)]
@@ -112,6 +118,9 @@ impl WpBatch {
         } else {
             self.batch.last().unwrap().trailing_edge()
         }
+    }
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut WavePacket> {
+        self.batch.get_mut(index)
     }
     pub fn len(&self) -> usize {
         self.batch.len()

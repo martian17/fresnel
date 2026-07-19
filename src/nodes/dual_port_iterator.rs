@@ -209,7 +209,9 @@ impl PhotonicCluster {
                 first_handle = handle;
                 continue;
             }
-            wp.state_handle = first_handle;
+            // it is dangerous to repoint the packets directly
+            // as they do not get kept track of by tombstones
+            // wp.state_handle = first_handle;
             if state_handles.contains(&handle) {
                 continue;
             }

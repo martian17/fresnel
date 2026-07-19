@@ -106,7 +106,7 @@ impl NodeWorker for SPDWorker {
             let state = slice.get_mut(wp_source.state_handle).unwrap_as_island_or_else(|_| {
                 panic!("Expected the cell to be an island");
             });
-            let source_mode = state.active_packets.extract(wp_source.snowflake);
+            let source_mode = state.extract_wavepacket(&wp_source);
             state.operators.push(Operator::SPD{
                 id: self.spd_id,
                 wp_snowflake: wp_source.snowflake,
@@ -123,7 +123,7 @@ impl NodeWorker for SPDWorker {
             let state = cell.unwrap_as_island_or_else(|_| {
                 panic!("Expected the cell to be an island");
             });
-            if state.active_packets.is_empty() {
+            if state.has_no_active_packets() {
                 rayon_handles.push(handle);
                 rayon_states.push(state.clone())
                 // *cell = InteractionCell::ComputeWip;
@@ -277,7 +277,7 @@ impl SPDWorkerHandle {
 //                         panic!("Expected IslandOfInteraction, but got something else");
 //                     }
 //                 };
-//                 let (op_index, port_index) = island.active_packets.extract(wp.snowflake);
+//                 let (op_index, port_index) = island.extract_wavepacket(&wp);
 //                 let new_op_index = island.operators.len() as u16;
 //                 island.operators.push(Operator::SPD {
 //                     node: self.id,
@@ -286,7 +286,7 @@ impl SPDWorkerHandle {
 //                 island.operators[op_index as usize].set_sink(port_index, (new_op_index, 0));
 // 
 //                 // last packet of the island detected: collapse and free the slot
-//                 if island.active_packets.is_empty() {
+//                 if island.has_no_active_packets() {
 //                     *slice.get_mut(wp.state_handle) = InteractionCell::Result(CollapseResult {
 //                         packets: smallvec![WpResult::Success {
 //                             time: wp.time,

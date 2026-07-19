@@ -42,6 +42,8 @@ use crate::types::physics::{
 };
 use crate::util::set::U32OpenAddressSet;
 use crate::nodes::dual_port_iterator::{
+    DualPortPairingIterator,
+    DualPortPairing,
     DualPortIterator,
     DualPortCluster,
     PhotonicCluster,
@@ -126,102 +128,113 @@ impl NodeWorker for DualPortWorker {
             }
         }
         let mut slice = ctx.global.interaction_store.get_states(vec![&mut left_batch.batch, &mut right_batch.batch]);
-        let mut sink_batch_left: Vec<WavePacket> = Vec::new();
-        let mut sink_batch_right: Vec<WavePacket> = Vec::new();
 
-        for cluster in DualPortIterator::new(left_batch, right_batch) {
-            match cluster {
-                // TODO: Merge these two branches
-                DualPortCluster::LeftIsolate(wp_source) => {
-                    ctx.runner.time = wp_source.time;
-                    let state = slice.get_mut(wp_source.state_handle).unwrap_as_island_or_else(|_| {
-                        panic!("Expected IslandOfInteraction, but got something else");
-                    });
-                    let mut wp_sink_left = wp_source.clone();
-                    let mut wp_sink_right = wp_source.clone();
-                    wp_sink_left.snowflake = snowflake::next_u32();
-                    wp_sink_right.snowflake = snowflake::next_u32();
-                    let source_mode = state.active_packets.extract(wp_source.snowflake);
-                    let sink_mode_left = state.register_wavepacket(&wp_sink_left);
-                    let sink_mode_right = state.register_wavepacket(&wp_sink_right);
-                    state.operators.push(Operator::DualUnivariate{
-                        store_handle: self.seq,
-                        time: wp_source.time,
-                        incidence_port_id: 0,
-                        source_modes: [source_mode],
-                        sink_modes: [sink_mode_left, sink_mode_right],
-                    });
-                    sink_batch_left.push(wp_sink_left);
-                    sink_batch_right.push(wp_sink_right);
-                },
-                DualPortCluster::RightIsolate(wp_source) => {
-                    ctx.runner.time = wp_source.time;
-                    let state = slice.get_mut(wp_source.state_handle).unwrap_as_island_or_else(|_| {
-                        panic!("Expected IslandOfInteraction, but got something else");
-                    });
-                    let mut wp_sink_left = wp_source.clone();
-                    let mut wp_sink_right = wp_source.clone();
-                    wp_sink_left.snowflake = snowflake::next_u32();
-                    wp_sink_right.snowflake = snowflake::next_u32();
-                    let source_mode = state.active_packets.extract(wp_source.snowflake);
-                    let sink_mode_left = state.register_wavepacket(&wp_sink_left);
-                    let sink_mode_right = state.register_wavepacket(&wp_sink_right);
-                    state.operators.push(Operator::DualUnivariate{
-                        store_handle: self.seq,
-                        time: wp_source.time,
-                        incidence_port_id: 1,
-                        source_modes: [source_mode],
-                        sink_modes: [sink_mode_left, sink_mode_right],
-                    });
-                    sink_batch_left.push(wp_sink_left);
-                    sink_batch_right.push(wp_sink_right);
-                },
-                DualPortCluster::Cluster(mut cluster) => {
-                    // TODO: Investigate correctness of this time definition
-                    // This is not monotonically ascending, but it is good enough
-                    // forn the coarse time keeping purposes
-                    // In order to change the order we might need to reshuffle some
-                    // wavepackets and clusters on the fly, which would warrant the use
-                    // of intermediate buffering, which is at this point too costly
-                    // to implement with unknown runtime overhead. Let's keep it simple.
-                    ctx.runner.time = cluster.time().max(ctx.runner.time);
-                    // merge everything
-                    let state_handle = cluster.merge_states(&mut slice);
-                    let state = slice.get_mut(state_handle).unwrap_as_island_or_else(|_| {
-                        panic!("Expected IslandOfInteraction, but got something else");
-                    });
-                    for (left_index, right_index) in cluster.pairs.iter() {
-                        let wp_source_left = &cluster.left_packets[*left_index as usize];
-                        let wp_source_right = &cluster.right_packets[*right_index as usize];
-
-                        let mut wp_sink_left_left = wp_source_left.clone();
-                        let mut wp_sink_left_right = wp_source_left.clone();
-                        let mut wp_sink_right_left = wp_source_right.clone();
-                        let mut wp_sink_right_right = wp_source_right.clone();
-                        wp_sink_left_left.snowflake = snowflake::next_u32();
-                        wp_sink_left_right.snowflake = snowflake::next_u32();
-                        wp_sink_right_left.snowflake = snowflake::next_u32();
-                        wp_sink_right_right.snowflake = snowflake::next_u32();
-
-                        let source_mode_left = state.active_packets.extract(wp_source_left.snowflake);
-                        let source_mode_right = state.active_packets.extract(wp_source_right.snowflake);
-                        let sink_mode_left_left =   state.register_wavepacket(&wp_sink_left_left);
-                        let sink_mode_left_right =  state.register_wavepacket(&wp_sink_left_right);
-                        let sink_mode_right_left =  state.register_wavepacket(&wp_sink_right_left);
-                        let sink_mode_right_right = state.register_wavepacket(&wp_sink_right_right);
-                        state.operators.push(Operator::DualBivariate{
-                            store_handle: self.seq,
-                            time: ctx.runner.time,
-                            packet_indistinguishability: wp_source_left.indistinguishability(wp_source_right),
-                            source_modes: [source_mode_left, source_mode_right],
-                            sink_modes: [sink_mode_left_left, sink_mode_left_right, sink_mode_right_left, sink_mode_right_right],
-                        });
-                        sink_batch_left.push(wp_sink_left_left);
-                        sink_batch_left.push(wp_sink_left_right);
-                        sink_batch_right.push(wp_sink_right_left);
-                        sink_batch_right.push(wp_sink_right_right);
+        // first pass: merge all the states
+        {
+            let mut left_index = 0;
+            let mut right_index = 0;
+            loop {
+                let left = left_batch.get_mut(left_index);
+                let right = right_batch.get_mut(right_index);
+                let (early_batch, late_batch, early_index, late_index) = if left.is_none() && right.is_none() {
+                    break;
+                } else if left.is_some_and(|left| right.is_none_or(|right| left.time <= right.time)) {
+                    (&mut left_batch, &mut right_batch, &mut left_index, &mut right_index)
+                } else {
+                    (&mut right_batch, &mut left_batch, &mut right_index, &mut left_index)
+                };
+                let early = early_batch.get_mut(*early_index).unwrap();
+                slice.correct_state_handle_if_tombstone(early);
+                for i in (*late_index)..late_batch.len() {
+                    let late = late_batch.get_mut(i).unwrap();
+                    slice.correct_state_handle_if_tombstone(late);
+                    if early.state_handle != late.state_handle {
+                        // merge late to early
+                        slice.merge_islands(late.state_handle, early.state_handle);
                     }
                 }
+                *early_index += 1;
+            }
+        }
+        // pass #2: update the sink packets and record the modes
+        let mut sink_batch_left: Vec<WavePacket> = Vec::new();
+        let mut sink_batch_right: Vec<WavePacket> = Vec::new();
+        // (source mode, sink mode left, sink mode right)
+        let mut mode_map_left: Vec<(u16, u16, u16)> = Vec::new();
+        let mut mode_map_right: Vec<(u16, u16, u16)> = Vec::new();
+        {
+            let mut left_index = 0;
+            let mut right_index = 0;
+            loop {
+                let left = left_batch.get_mut(left_index);
+                let right = right_batch.get_mut(right_index);
+                let (early_batch, late_batch, early_index, late_index, mode_map) = if left.is_none() && right.is_none() {
+                    break;
+                } else if left.is_some_and(|left| right.is_none_or(|right| left.time <= right.time)) {
+                    (&mut left_batch, &mut right_batch, &mut left_index, &mut right_index, &mut mode_map_left)
+                } else {
+                    (&mut right_batch, &mut left_batch, &mut right_index, &mut left_index, &mut mode_map_right)
+                };
+                let source_wp = early_batch.get_mut(*early_index).unwrap();
+                let sink_left_wp = source_wp.clone().set_snowflake();
+                let sink_right_wp = source_wp.clone().set_snowflake();
+
+                let state = slice.get_mut(source_wp.state_handle).unwrap_as_island_or_else(|_| {
+                    panic!("Expected island of interaction");
+                });
+                let early_mode = state.extract_wavepacket(source_wp);
+                let sink_left_mode = state.register_wavepacket(&sink_left_wp);
+                let sink_right_mode = state.register_wavepacket(&sink_right_wp);
+                mode_map.push((early_mode, sink_left_mode, sink_right_mode));
+                sink_batch_left.push(sink_left_wp);
+                sink_batch_right.push(sink_right_wp);
+                *early_index += 1;
+            }
+        }
+
+        // pass #3: register operators for all the packets and pairs
+        {
+            let mut left_index = 0;
+            let mut right_index = 0;
+            loop {
+                let left = left_batch.get_mut(left_index);
+                let right = right_batch.get_mut(right_index);
+                let (early_batch, late_batch, early_index, late_index, mode_map_early, mode_map_late, incident_port) = if left.is_none() && right.is_none() {
+                    break;
+                } else if left.is_some_and(|left| right.is_none_or(|right| left.time <= right.time)) {
+                    (&mut left_batch, &mut right_batch, &mut left_index, &mut right_index, &mut mode_map_left, &mut mode_map_right, 0)
+                } else {
+                    (&mut right_batch, &mut left_batch, &mut right_index, &mut left_index, &mut mode_map_right, &mut mode_map_left, 1)
+                };
+                let early = early_batch.get_mut(*early_index).unwrap();
+                let state = slice.get_mut(early.state_handle).unwrap_as_island_or_else(|_| {
+                    panic!("Every islands should have been merged in the previous pass.");
+                });
+                let mut is_univariate = true;
+                for i in (*late_index)..late_batch.len() {
+                    let late = late_batch.get_mut(i).unwrap();
+                    let (early_src, early_left, early_right) = mode_map_early[*early_index];
+                    let (late_src, late_left, late_right) = mode_map_late[*late_index];
+                    is_univariate = false;
+                    state.operators.push(Operator::DualBivariate{
+                        store_handle: self.seq,
+                        time: early.time,
+                        packet_indistinguishability: early.indistinguishability(late),
+                        source_modes: [early_src, late_src],
+                        sink_modes: [early_left, early_right, late_left, late_right],
+                    });
+                }
+                if is_univariate {
+                    let (early_src, early_left, early_right) = mode_map_early[*early_index];
+                    state.operators.push(Operator::DualUnivariate{
+                        store_handle: self.seq,
+                        time: early.time,
+                        incidence_port_id: incident_port,
+                        source_modes: [early_src],
+                        sink_modes: [early_left, early_right],
+                    });
+                }
+                *early_index += 1;
             }
         }
 
