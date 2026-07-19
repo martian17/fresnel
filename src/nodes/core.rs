@@ -89,8 +89,8 @@ impl WavePacket {
 
 #[derive(Clone)]
 pub struct WpBatch {
-    pub start_time: u64,
-    pub end_time: u64,
+    pub start_time: Time,
+    pub end_time: Time,
     pub batch: Vec<WavePacket>,
 }
 

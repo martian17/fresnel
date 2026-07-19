@@ -46,17 +46,19 @@ use crate::types::core::{
 use crate::types::physics::{
     PhotonicKrausOperators,
 };
+use crate::parquet::core::TimeTagBatch;
 
 pub type SPDRunner = NodeRunner<SPDWorker>;
 
 pub enum SPDEvent {
-    ConnectTimeTagger(SyncSender<Vec<Time>>)
+    ConnectTimeTagger(SyncSender<TimeTagBatch>)
 }
 
 // models
 pub struct SPDWorker {
-    tagger_channel: Option<SyncSender<Vec<Time>>>,
-    claimer_channel: Option<SyncSender<Vec<WavePacket>>>,
+    settagger_channel: Sender<SyncSender<TimeTagBatch>>,
+    // tagger_channel: Option<SyncSender<Vec<Time>>>,
+    claimer_channel: Option<SyncSender<WpBatch>>,
     claimer_thread_handle: Option<thread::JoinHandle<()>>,
     spd_id: u16,
     // wall-clock throughput instrumentation; read by the monitor thread in main
@@ -81,14 +83,34 @@ impl NodeWorker for SPDWorker {
     type NodeHandle = SPDWorkerHandle;
 
     fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
-        let (tx, rx) = sync_channel::<Vec<WavePacket>>(30);
+        let (tx, rx) = sync_channel::<WpBatch>(1);
+        let (tx_settagger, rx_settagger) = channel::<SyncSender<TimeTagBatch>>();
         Self {
-            tagger_channel: None,
+            settagger_channel: tx_settagger,
+            // tagger_channel: None,
             claimer_channel: Some(tx),
             claimer_thread_handle: Some(thread::spawn(move || {
+                let mut tagger_channel = rx_settagger.try_recv().ok();
                 loop {
                     let mut batch = rx.recv().unwrap();
-                    let result = ctx.interaction_store.claim_collapsed_packets(&mut batch);
+                    // polled after the batch recv: ConnectTimeTagger is handled on the
+                    // node thread before its first process_batch, and that ordering
+                    // carries over the channels — so polling here guarantees the very
+                    // first batch of tags already sees the tagger
+                    if let Ok(tagger_channel_value) = rx_settagger.try_recv() {
+                        tagger_channel = Some(tagger_channel_value);
+                    }
+                    let result = ctx.interaction_store.claim_collapsed_packets(&mut batch.batch);
+                    // println!("Collapse ratio: {} -> {}", batch.batch.len(), result.len());
+                    if let Some(tagger_channel) = &tagger_channel {
+                        // sent even when no tag survived collapse: the batch's end_time
+                        // still advances this channel's frontier in the merger
+                        tagger_channel.send(TimeTagBatch{
+                            start_time: batch.start_time,
+                            end_time: batch.end_time,
+                            batch: result,
+                        }).unwrap();
+                    }
                 }
             })),
             spd_id: template.spd_id,
@@ -107,7 +129,7 @@ impl NodeWorker for SPDWorker {
     fn handle_custom_event(&mut self, ctx: RunnerContext<Self>, custom_event: Self::CustomControlEvent) {
         match custom_event {
             SPDEvent::ConnectTimeTagger(tagger_channel) => {
-                self.tagger_channel = Some(tagger_channel);
+                self.settagger_channel.send(tagger_channel).unwrap();
             },
         }
     }
@@ -175,7 +197,7 @@ impl NodeWorker for SPDWorker {
 
         // now wait for other threads to finish their results
         if let Some(channel) = &self.claimer_channel {
-            channel.send(batch.batch).unwrap();
+            channel.send(batch).unwrap();
         }
     }
 }
@@ -185,6 +207,7 @@ pub struct SPDWorkerHandle {
     pub ports: Vec<TxPort>,
     pub control: Sender<TimedControlEvent<SPDEvent>>,
     pub join_handle: std::thread::JoinHandle<()>,
+    pub spd_id: u16,
 }
 
 pub struct SPDTemplate {
@@ -202,6 +225,7 @@ impl NodeHandle for SPDWorkerHandle {
             ports,
             control,
             join_handle,
+            spd_id: template.spd_id,
         }
     }
     fn get_tx_ports(&self) -> &Vec<TxPort>{
@@ -217,7 +241,7 @@ impl NodeHandle for SPDWorkerHandle {
 
 impl SPDWorkerHandle {
     // Human facing API (can be slow). ctx is cloned for now
-    fn connect_time_tagger(&self, ctx: Arc<SimulationContext>, channel: SyncSender<Vec<Time>>) {
+    pub fn connect_time_tagger(&self, channel: SyncSender<TimeTagBatch>) {
         self.schedule_node_control_event(SPDEvent::ConnectTimeTagger(channel), 0);
     }
 }

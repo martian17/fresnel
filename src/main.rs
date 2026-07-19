@@ -4,6 +4,7 @@ mod concurrency;
 mod types;
 mod util;
 mod collapser;
+mod parquet;
 
 use std::sync::{Arc};
 use arc_swap::ArcSwap;
@@ -48,6 +49,7 @@ use crate::nodes::spd::{
 use crate::nodes::core::{
     NodeHandle,
 };
+use crate::parquet::core::ParquetWorker;
 
 
 
@@ -271,6 +273,13 @@ fn entanglement_swap(){
     bs_center.exit_port(0).connect(spd_2.entry_port(0));
     bs_center.exit_port(1).connect(spd_3.entry_port(0));
 
+    std::fs::create_dir_all("data").unwrap();
+    let parquet_writer = ParquetWorker::spawn("data".into(), "entanglement_swap".to_string());
+    spd_1.connect_time_tagger(parquet_writer.add_channel(spd_1.spd_id));
+    spd_2.connect_time_tagger(parquet_writer.add_channel(spd_2.spd_id));
+    spd_3.connect_time_tagger(parquet_writer.add_channel(spd_3.spd_id));
+    spd_4.connect_time_tagger(parquet_writer.add_channel(spd_4.spd_id));
+    parquet_writer.start();
 
     spd_1.start();
     spd_2.start();
