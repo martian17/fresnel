@@ -98,7 +98,7 @@ impl NodeWorker for EPPSWorker {
     type NodeTemplate = EPPSTemplate;
     type NodeHandle = EPPSWorkerHandle;
     
-    fn new(template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
+    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
         Self {
             signal_profile: template.signal_profile.clone(),
             idler_profile: template.idler_profile.clone(),

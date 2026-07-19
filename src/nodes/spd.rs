@@ -56,6 +56,8 @@ pub enum SPDEvent {
 // models
 pub struct SPDWorker {
     tagger_channel: Option<SyncSender<Vec<Time>>>,
+    claimer_channel: Option<SyncSender<Vec<WavePacket>>>,
+    claimer_thread_handle: Option<thread::JoinHandle<()>>,
     spd_id: u16,
     // wall-clock throughput instrumentation; read by the monitor thread in main
     packet_counter: Arc<std::sync::atomic::AtomicU64>,
@@ -64,14 +66,31 @@ pub struct SPDWorker {
     sim_time_ps: Arc<std::sync::atomic::AtomicU64>,
 }
 
+impl Drop for SPDWorker {
+    fn drop(&mut self) {
+        drop(self.claimer_channel.take());          // hang up FIRST
+        if let Some(h) = self.claimer_thread_handle.take() {
+            drop(h.join());
+        }
+    }
+}
+
 impl NodeWorker for SPDWorker {
     type CustomControlEvent = SPDEvent;
     type NodeTemplate = SPDTemplate;
     type NodeHandle = SPDWorkerHandle;
 
-    fn new(template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
+    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
+        let (tx, rx) = sync_channel::<Vec<WavePacket>>(30);
         Self {
             tagger_channel: None,
+            claimer_channel: Some(tx),
+            claimer_thread_handle: Some(thread::spawn(move || {
+                loop {
+                    let mut batch = rx.recv().unwrap();
+                    let result = ctx.interaction_store.claim_collapsed_packets(&mut batch);
+                }
+            })),
             spd_id: template.spd_id,
             packet_counter: template.packet_counter.clone(),
             sim_time_ps: template.sim_time_ps.clone(),
@@ -108,7 +127,6 @@ impl NodeWorker for SPDWorker {
             });
             // NOTE: Do not extract
             // island should keep the active packets in case it gets merged or moved.
-            // let source_mode = state.extract_wavepacket(&wp_source);
             let source_mode = state.get_wavepacket_mode(wp_source);
             state.terminated_packet_count += 1;
             state.operators.push(Operator::SPD{
@@ -159,9 +177,9 @@ impl NodeWorker for SPDWorker {
         println!("SPD {} rayon done", self.spd_id);
 
         // now wait for other threads to finish their results
-        let result = ctx.global.interaction_store.claim_collapsed_packets(&mut batch.batch);
-        // println!("Got a batch of {} timetags. time: [{} {}]", batch.len(), batch.start_time, batch.end_time);
-        //
+        if let Some(channel) = &self.claimer_channel {
+            channel.send(batch.batch).unwrap();
+        }
         println!("SPD {} all done", self.spd_id);
     }
 }

@@ -396,7 +396,7 @@ pub trait NodeWorker: Send + Sized {
     type NodeTemplate;
     type NodeHandle: NodeHandle<CustomControlEvent = Self::CustomControlEvent, NodeTemplate = Self::NodeTemplate>;
 
-    fn new(template: &Self::NodeTemplate, id: OpStoreHandle) -> Self;
+    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self;
     fn handle_connection(&mut self, ctx: RunnerContext<Self>, exit_port_id: PortId, tx_port: TxPort);
     fn handle_custom_event(&mut self, ctx: RunnerContext<Self>, custom_event: Self::CustomControlEvent);
     fn process_batch(&mut self, ctx: RunnerContext<Self>);
@@ -439,7 +439,7 @@ impl<T: NodeWorker + 'static> NodeRunner<T> {
                 control_event_queue: BinaryHeap::new(),
                 time: 0,
             },
-            worker: T::new(&template, id),
+            worker: T::new(ctx.clone(), &template, id),
         };
         let ctx_cpy = ctx.clone();
         let handle = thread::spawn(move || {

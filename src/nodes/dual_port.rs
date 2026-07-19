@@ -58,7 +58,7 @@ impl NodeWorker for DualPortWorker {
     type NodeTemplate = DualPortTemplate;
     type NodeHandle = DualPortWorkerHandle;
 
-    fn new(template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
+    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
         Self {
             sink_left: None,
             sink_right: None,

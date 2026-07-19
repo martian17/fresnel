@@ -61,7 +61,7 @@ impl NodeWorker for SinglePortWorker {
     type NodeTemplate = SinglePortTemplate;
     type NodeHandle = SinglePortWorkerHandle;
 
-    fn new(template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
+    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
         Self {
             sink: None,
             delay: template.delay,
