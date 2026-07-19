@@ -63,6 +63,9 @@ impl<T: Clone> MonotonicMap<T>{
         while let MonotonicMapCell::Moved(next_handle) = self.data[handle as usize] {
             handle = next_handle;
         }
+        // stamping the resolved cell with a chain that leads back to itself
+        // would make every subsequent get() spin forever
+        debug_assert!(handle != self.resolve(next_handle), "MonotonicMap: move_out_to would create a Moved cycle");
         let data = match &mut self.data[handle as usize] {
             MonotonicMapCell::Data(data) => data,
             _ => unreachable!("actually unreachable")
@@ -70,6 +73,15 @@ impl<T: Clone> MonotonicMap<T>{
         let cloned = data.clone();
         self.data[handle as usize] = MonotonicMapCell::Moved(next_handle);
         return cloned;
+    }
+    fn resolve(&self, mut handle: u16) -> u16 {
+        while let MonotonicMapCell::Moved(next_handle) = self.data[handle as usize] {
+            handle = next_handle;
+        }
+        handle
+    }
+    fn same_cell(&self, a: u16, b: u16) -> bool {
+        self.resolve(a) == self.resolve(b)
     }
 }
 
@@ -213,7 +225,7 @@ pub fn collapse(island: &IslandOfInteraction) -> CollapseResult {
                         },
                         _ => unreachable!("unreachable")
                     }
-                    if mode_2 != u16::MAX {
+                    if mode_2 != u16::MAX && !operators.same_cell(mode_1, mode_2) {
                         let present_operator_2 = operators.move_out_to(mode_2, mode_1);
                         let present_operator_1 = operators.get(mode_1);
                         match present_operator_1 {
@@ -234,9 +246,12 @@ pub fn collapse(island: &IslandOfInteraction) -> CollapseResult {
                             }
                             _ => unreachable!("unreachable")
                         }
-                    } else {
+                    } else if mode_2 == u16::MAX {
                         mode_operator_map[source_modes[1] as usize] = mode_1;
                     }
+                    // when mode_1 and mode_2 already resolve to the same cell there is
+                    // nothing to move: both source modes feed the same MultiModeMap and
+                    // this op's entries were added above
                 } else if mode_2 != u16::MAX {
                     let present_operator_2 = operators.get(mode_2);
                     match present_operator_2 {
@@ -298,6 +313,11 @@ pub fn collapse(island: &IslandOfInteraction) -> CollapseResult {
 
     // all right, now we've constructed mode -> operators map
     while let Some((mode, photon)) = active_modes.pop() {
+        // TEMP DIAGNOSTIC: an active photon must always have a consumer operator
+        if mode_operator_map[mode as usize] == u16::MAX {
+            println!("ORPHAN mode {mode} (photon {photon:?}) in island {island:?}");
+            panic!("collapse: mode {mode} has no consumer operator");
+        }
         match operators.get(mode_operator_map[mode as usize]) {
             MonteCarloOperator::Single {source, sink } => {
                 active_modes.push((*sink, photon));
