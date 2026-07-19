@@ -172,7 +172,7 @@ pub struct IslandOfInteraction {
     // (wavepacket id, operator index, operator exit port identification)
     active_packets: ActivePacketStore,
     //SmallVec<[(u32, OpHandle, u8); 8]>
-    mode_max: u16,// mode_index < mode_max
+    pub mode_max: u16,// mode_index < mode_max
 }
 
 // if active packets becomes 0, we dispatch 
@@ -287,10 +287,25 @@ impl WpResult {
 pub struct CollapseResult {
     // got some leeway, 20 packets would robably be overkill, but got 512 bytes of space
     pub packets: SmallVec<[WpResult; 20]>,
+    pub ref_cnt: usize,
 }
 
 impl CollapseResult {
-    fn get(&self, wp: &WavePacket) -> Option<Time> {
+    // fn get(&self, wp: &WavePacket) -> Option<Time> {
+    //     let mut result: Option<&WpResult> = None;
+    //     for res in self.packets.iter() {
+    //         if res.wp_snowflake() == wp.snowflake {
+    //             result = Some(res);
+    //             break;
+    //         }
+    //     }
+    //     let result = result.unwrap_or_else(||panic!("Wavepacket not found within result"));
+    //     match result {
+    //         WpResult::Empty{..} => None,
+    //         WpResult::Success{..} => Some(wp.time),
+    //     }
+    // }
+    fn extract(&mut self, wp: &WavePacket) -> Option<Time> {
         let mut result: Option<&WpResult> = None;
         for res in self.packets.iter() {
             if res.wp_snowflake() == wp.snowflake {
@@ -299,10 +314,14 @@ impl CollapseResult {
             }
         }
         let result = result.unwrap_or_else(||panic!("Wavepacket not found within result"));
+        self.ref_cnt -= 1;
         match result {
             WpResult::Empty{..} => None,
             WpResult::Success{..} => Some(wp.time),
         }
+    }
+    fn is_retirable(&self) -> bool {
+        self.ref_cnt == 0
     }
 }
 
@@ -372,7 +391,6 @@ impl InteractionStore {
             parent: self.clone(),
             buff: data.buff.clone(),
             indices: WrappingIterU32::new(start_idx, end_idx).collect(),
-            retired: Vec::new(),
             moved: Vec::new(),
         }, start_idx, end_idx)
     }
@@ -431,7 +449,6 @@ impl InteractionStore {
             parent: self.clone(),
             buff: data.buff.clone(),
             indices,
-            retired: Vec::new(),
             moved: Vec::new(),
         }
     }
@@ -453,12 +470,11 @@ impl InteractionStore {
             parent: self.clone(),
             buff: data.buff.clone(),
             indices: handles.clone(),
-            retired: Vec::new(),
             moved: Vec::new(),
         }
     }
-    pub fn get_collapsed_packets(self: &Arc<Self>, packets: &Vec<WavePacket>) -> Vec<Time> {
-        let data = self.cvar.wait_while(self.data.lock().unwrap(), |data| {
+    pub fn claim_collapsed_packets(self: &Arc<Self>, packets: &Vec<WavePacket>) -> Vec<Time> {
+        let mut data = self.cvar.wait_while(self.data.lock().unwrap(), |data| {
             for wp in packets.iter() {
                 let handle = wp.state_handle;
                 if data.registry.get(wp.state_handle) == CellState::Locked {
@@ -477,7 +493,15 @@ impl InteractionStore {
             let InteractionCell::Result(collapse_result) = (unsafe { data.buff.unsafely_get_mut(wp.state_handle) }) else {
                 panic!("Previous check a few lines ago should have caught this");
             };
-            collapse_result.get(wp)
+            let res = collapse_result.extract(wp);
+            if collapse_result.is_retirable() {
+                // NOTE: I think this is the only place where cells are reclaimed
+                data.registry.set(wp.state_handle, CellState::Retired);
+                unsafe {
+                    (*data.buff.cell_ptr(wp.state_handle)).assume_init_drop();
+                }
+            }
+            return res;
         }).collect()
     }
 }
@@ -536,15 +560,11 @@ pub struct InteractionStoreSlice{
     parent: Arc<InteractionStore>,
     buff: Arc<StatecellBuffer>,
     indices: Vec<u32>,
-    retired: Vec<u32>,
     // TODO: Use U32OpenAddressSet here and compare the performance
     moved: Vec<u32>,
 }
 
 impl InteractionStoreSlice {
-    pub fn retire(&mut self, handle: u32) {
-        self.retired.push(handle);
-    }
     pub fn get_mut(&mut self, handle: u32) -> &mut InteractionCell {
         unsafe {
             self.buff.unsafely_get_mut(handle)
@@ -635,16 +655,6 @@ impl Drop for InteractionStoreSlice {
                 }
             } else {
                 data.registry.set(moved_handle, CellState::Moved);
-            }
-        }
-        for i in self.retired.iter().copied() {
-            data.registry.set(i, CellState::Retired);
-            // Drops the cell. This frees up any vector or heap data that was referenced by the
-            // cell. Since this is linear access at the front, it should be cheap enough
-            // besides, the fact that the worker touched this means it's still likely to be on
-            // cache
-            unsafe {
-                (*self.buff.cell_ptr(i)).assume_init_drop();
             }
         }
         for handle in data.registry.handles_from_front() {

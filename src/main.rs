@@ -3,6 +3,7 @@ mod nodes;
 mod concurrency;
 mod types;
 mod util;
+mod collapser;
 
 use std::sync::{Arc};
 use arc_swap::ArcSwap;

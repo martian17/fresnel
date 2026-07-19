@@ -132,16 +132,20 @@ impl NodeWorker for SPDWorker {
         drop(slice);
         let mut rayon_slice = ctx.global.interaction_store.get_states_from_raw_handles(&rayon_handles);
         let rayon_results: Vec<CollapseResult> = rayon_states.par_iter().map(|state|{
-            CollapseResult {
-                packets: state.operators.iter().filter_map(|op| match op {
-                    Operator::SPD{id, time, wp_snowflake, ..} => Some(WpResult::Success{
-                        time: *time,
-                        spd_id: *id,
-                        wp_snowflake: *wp_snowflake,
-                    }),
-                    _ => None,
-                }).collect(),
-            }
+            crate::collapser::monte_carlo::collapse(state)
+            // let collapsed_packets: SmallVec<[WpResult; 20]> = state.operators.iter().filter_map(|op| match op {
+            //     Operator::SPD{id, time, wp_snowflake, ..} => Some(WpResult::Success{
+            //         time: *time,
+            //         spd_id: *id,
+            //         wp_snowflake: *wp_snowflake,
+            //     }),
+            //     _ => None,
+            // }).collect();
+            // let ref_cnt: usize = collapsed_packets.len();
+            // CollapseResult {
+            //     packets: collapsed_packets,
+            //     ref_cnt,
+            // }
         }).collect();
         for (result, handle) in rayon_results.into_iter().zip(rayon_handles.iter().copied()) {
             rayon_slice.set(handle, InteractionCell::Result(result));
@@ -149,7 +153,7 @@ impl NodeWorker for SPDWorker {
         drop(rayon_slice);
 
         // now wait for other threads to finish their results
-        let result = ctx.global.interaction_store.get_collapsed_packets(&batch.batch);
+        let result = ctx.global.interaction_store.claim_collapsed_packets(&batch.batch);
         // println!("Got a batch of {} timetags. time: [{} {}]", batch.len(), batch.start_time, batch.end_time);
     }
 }
