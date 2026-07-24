@@ -35,7 +35,7 @@ enum ParquetWorkerEvent {
     // RemoveChannel(u16),
 
     Start,
-    // Stop(Time)
+    Stop,
 }
 
 struct ChannelBuffer {
@@ -108,10 +108,23 @@ impl ParquetWorker {
                 ParquetWorkerEvent::Start => {
                     break;
                 }
+                ParquetWorkerEvent::Stop => {
+                    // returning drops writer_channel; the writer thread sees the
+                    // disconnect, flushes what it has, and writes the footer
+                    return;
+                }
             }
         }
         assert!(!self.rx_channels.is_empty(), "ParquetWorker started with no channels");
         loop {
+            match self.ctrl_channel.try_recv() {
+                Ok(ParquetWorkerEvent::Stop) => {
+                    self.final_flush();
+                    return;
+                }
+                Ok(_) => {} // AddChannel after start: not supported, ignored
+                Err(_) => {} // empty, or the handle was dropped without a stop
+            }
             // wait on the laggard, since only its progress can advance the safe
             // point. The timeout matters: blocking here indefinitely while the
             // other taggers fill up would backpressure their claimers (and in
@@ -151,6 +164,25 @@ impl ParquetWorker {
             }
         }
     }
+    // shutdown path: nothing more will arrive after this, so every pending tag
+    // is final regardless of the safe frontier — drain and emit all of it
+    fn final_flush(&mut self) {
+        let mut out: Vec<NormalizedTimeTag> = Vec::new();
+        for channel in self.rx_channels.iter_mut() {
+            while let Ok(batch) = channel.receiver.try_recv() {
+                channel.absorb(batch);
+            }
+            out.extend(channel.pending.drain(..).map(|t| NormalizedTimeTag{
+                channel_id: channel.channel_id,
+                time_tag_ps: t,
+            }));
+        }
+        if !out.is_empty() {
+            out.sort_by_key(|tag| tag.time_tag_ps);
+            // best effort: if the writer already died there is nothing to save
+            let _ = self.writer_channel.send(out);
+        }
+    }
 }
 
 
@@ -180,6 +212,15 @@ impl ParquetHandle {
         self.ctrl_channel.send(ParquetWorkerEvent::Start).unwrap();
     }
     pub fn join(self) {
+        self.thread_handle.join().unwrap();
+        self.writer_thread_handle.join().unwrap();
+    }
+    // graceful shutdown: returns once the current file's footer is on disk.
+    // Join order matters — the writer only sees the disconnect after the
+    // merge thread (which owns the sender) has exited.
+    pub fn stop(self) {
+        // ignore send failure: the worker may have already exited
+        let _ = self.ctrl_channel.send(ParquetWorkerEvent::Stop);
         self.thread_handle.join().unwrap();
         self.writer_thread_handle.join().unwrap();
     }

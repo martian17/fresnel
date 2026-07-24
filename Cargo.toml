@@ -14,6 +14,7 @@ chrono = "0.4.44"
 parquet = "58.3.0"
 serde = { version = "1.0.219", features = ["derive"] }
 arc-swap = { version = "1.9.2" }
+ctrlc = { version = "3.5" }
 boxcar = { version = "0.2.14" }
 rayon = { version = "1.12.0" }
 

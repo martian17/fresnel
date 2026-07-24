@@ -50,6 +50,12 @@ use crate::parquet::core::TimeTagBatch;
 
 pub type SPDRunner = NodeRunner<SPDWorker>;
 
+// hard-coded detector model, applied to the claimed click stream:
+// non-paralyzable dead time, dark counts, detection efficiency
+const DEAD_TIME_PS: Time = 20_000; // 20 ns
+const DARK_COUNTS_PER_PS: f64 = 100.0 * 1.0e-12; // 100 counts per second
+const DETECTION_EFFICIENCY: f64 = 0.9;
+
 pub enum SPDEvent {
     ConnectTimeTagger(SyncSender<TimeTagBatch>)
 }
@@ -91,6 +97,9 @@ impl NodeWorker for SPDWorker {
             claimer_channel: Some(tx),
             claimer_thread_handle: Some(thread::spawn(move || {
                 let mut tagger_channel = rx_settagger.try_recv().ok();
+                // last emitted click (real or dark); dead time and dark-count
+                // insertion both key off it, across batch boundaries
+                let mut last_click: Option<Time> = None;
                 loop {
                     let mut batch = rx.recv().unwrap();
                     // polled after the batch recv: ConnectTimeTagger is handled on the
@@ -100,16 +109,53 @@ impl NodeWorker for SPDWorker {
                     if let Ok(tagger_channel_value) = rx_settagger.try_recv() {
                         tagger_channel = Some(tagger_channel_value);
                     }
-                    let result = ctx.interaction_store.claim_collapsed_packets(&mut batch.batch);
-                    // println!("Collapse ratio: {} -> {}", batch.batch.len(), result.len());
-                    if let Some(tagger_channel) = &tagger_channel {
+                    let mut result = ctx.interaction_store.claim_collapsed_packets(&mut batch.batch);
+                    // claim order is only near-sorted; the detector model below
+                    // needs a time-ordered stream
+                    result.sort_unstable();
+                    let mut clicks: Vec<Time> = Vec::with_capacity(result.len());
+                    for time in result {
+                        if !rand::random_bool(DETECTION_EFFICIENCY) {
+                            continue;
+                        }
+                        // dark counts by probabilistic insertion: coin-flip on the
+                        // gap since the last click, landing uniformly inside it
+                        if let Some(last) = last_click {
+                            let gap = time.saturating_sub(last);
+                            // placement clamped to this batch's start: anything earlier
+                            // would sit behind the frontier (previous batch's end_time)
+                            // already reported to the tag merger
+                            let low = (last + 1).max(batch.start_time);
+                            if time > low && rand::random_bool((gap as f64 * DARK_COUNTS_PER_PS).min(1.0)) {
+                                let dark = rand::random_range(low..time);
+                                if dark - last >= DEAD_TIME_PS {
+                                    clicks.push(dark);
+                                    last_click = Some(dark);
+                                }
+                            }
+                        }
+                        match last_click {
+                            // non-paralyzable: a suppressed click doesn't extend the dead time
+                            Some(last) if time.saturating_sub(last) < DEAD_TIME_PS => {},
+                            _ => {
+                                clicks.push(time);
+                                last_click = Some(time);
+                            }
+                        }
+                    }
+                    if let Some(channel) = &tagger_channel {
                         // sent even when no tag survived collapse: the batch's end_time
                         // still advances this channel's frontier in the merger
-                        tagger_channel.send(TimeTagBatch{
+                        let sent = channel.send(TimeTagBatch{
                             start_time: batch.start_time,
                             end_time: batch.end_time,
-                            batch: result,
-                        }).unwrap();
+                            batch: clicks,
+                        });
+                        // a hung-up tagger means the parquet writer shut down
+                        // (SIGINT flush); keep claiming, just stop tagging
+                        if sent.is_err() {
+                            tagger_channel = None;
+                        }
                     }
                 }
             })),
