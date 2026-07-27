@@ -325,7 +325,7 @@ pub trait NodeHandle: Sized {
 
     // user needs to implement this
     // new should register a new operator store
-    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control_channel: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self;
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, seq: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control_channel: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self;
     fn get_tx_ports(&self) -> &Vec<TxPort>;
     fn get_control_channel(&self) -> &Sender<TimedControlEvent<Self::CustomControlEvent>>;
     fn join(self);
@@ -376,7 +376,7 @@ pub struct RunnerState<T: NodeWorker> {
 }
 
 impl<T: NodeWorker> RunnerState<T> {
-    fn ctx<'a>(&'a mut self, global: &'a Arc<SimulationContext>) -> RunnerContext<'a, T> {
+    fn ctx<'a>(&'a mut self, global: &'a SimulationContext) -> RunnerContext<'a, T> {
         RunnerContext {
             runner: self,
             global,
@@ -389,32 +389,35 @@ pub struct NodeRunner<T: NodeWorker> {
     worker: T,
 }
 
+pub trait NodeTemplate {
+    fn rx_port_count(&self) -> usize;
+}
+
 
 
 pub trait NodeWorker: Send + Sized {
     type CustomControlEvent: Send;
-    type NodeTemplate;
+    type NodeTemplate: NodeTemplate;
     type NodeHandle: NodeHandle<CustomControlEvent = Self::CustomControlEvent, NodeTemplate = Self::NodeTemplate>;
 
-    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self;
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self;
     fn handle_connection(&mut self, ctx: RunnerContext<Self>, exit_port_id: PortId, tx_port: TxPort);
     fn handle_custom_event(&mut self, ctx: RunnerContext<Self>, custom_event: Self::CustomControlEvent);
     fn process_batch(&mut self, ctx: RunnerContext<Self>);
-    fn register_operator(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate) -> OpStoreHandle;
-
+    fn register_operator(ctx: &SimulationContext, template: &Self::NodeTemplate) -> OpStoreHandle;
 }
 
 
 pub struct RunnerContext<'a, T: NodeWorker>{
     pub runner: &'a mut RunnerState<T>,
-    pub global: &'a Arc<SimulationContext>,
+    pub global: &'a SimulationContext,
 }
 
 
 impl<T: NodeWorker + 'static> NodeRunner<T> {
-    pub fn spawn(ctx: Arc<SimulationContext>, rx_port_count: usize, template: T::NodeTemplate) -> T::NodeHandle {
-        let id = T::register_operator(ctx.clone(), &template);
-        let (tx_ports, rx_ports): (Vec<_>, Vec<_>) = (0..rx_port_count).map(|_| {
+    pub fn spawn(ctx: &SimulationContext, template: T::NodeTemplate) -> T::NodeHandle {
+        let id = T::register_operator(&ctx, &template);
+        let (tx_ports, rx_ports): (Vec<_>, Vec<_>) = (0..template.rx_port_count()).map(|_| {
             let (tx_raw, rx_raw) = sync_channel::<WpBatch>(3);
             let tx = TxPort {
                 time: 0,
@@ -441,11 +444,11 @@ impl<T: NodeWorker + 'static> NodeRunner<T> {
             },
             worker: T::new(ctx.clone(), &template, id),
         };
-        let ctx_cpy = ctx.clone();
+        let ctx_clone = ctx.clone();
         let handle = thread::spawn(move || {
-            runner.run(ctx);
+            runner.run(ctx_clone);
         });
-        T::NodeHandle::new(ctx_cpy, &template, id, handle, tx_ports, control_tx)
+        T::NodeHandle::new(ctx.clone(), &template, id, handle, tx_ports, control_tx)
     }
     fn preload_control_events(&mut self){
         loop {
@@ -462,7 +465,7 @@ impl<T: NodeWorker + 'static> NodeRunner<T> {
             }
         }
     }
-    fn run(&mut self, ctx: Arc<SimulationContext>){
+    fn run(&mut self, ctx: SimulationContext){
         self.preload_control_events();
         loop {
             while let Ok(evt) = self.state.control_rx.try_recv() {

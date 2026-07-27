@@ -15,6 +15,7 @@ use crate::nodes::core::{
     NodeRunner,
     NodeHandle,
     NodeWorker,
+    NodeTemplate,
     TimedControlEvent,
     RunnerContext,
 };
@@ -61,14 +62,14 @@ impl NodeWorker for SinglePortWorker {
     type NodeTemplate = SinglePortTemplate;
     type NodeHandle = SinglePortWorkerHandle;
 
-    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
         Self {
             sink: None,
             delay: template.delay,
             seq,
         }
     }
-    fn register_operator(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate) -> OpStoreHandle {
+    fn register_operator(ctx: &SimulationContext, template: &Self::NodeTemplate) -> OpStoreHandle {
         ctx.operator_record.single.add(template.kraus_operators.clone())
     }
     fn handle_connection(&mut self, ctx: RunnerContext<Self>, exit_port_id: PortId, tx_port: TxPort) {
@@ -160,11 +161,17 @@ pub struct SinglePortTemplate {
     pub delay: u64,
 }
 
+impl NodeTemplate for SinglePortTemplate {
+    fn rx_port_count(&self) -> usize {
+        1
+    }
+}
+
 impl NodeHandle for SinglePortWorkerHandle {
     type CustomControlEvent = SinglePortEvent;
     type NodeTemplate = SinglePortTemplate;
 
-    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, seq: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
         Self {
             ports,
             control,

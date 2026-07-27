@@ -16,6 +16,7 @@ use crate::nodes::core::{
     NodeRunner,
     NodeHandle,
     NodeWorker,
+    NodeTemplate,
     TimedControlEvent,
     RunnerContext,
 };
@@ -58,14 +59,14 @@ impl NodeWorker for DualPortWorker {
     type NodeTemplate = DualPortTemplate;
     type NodeHandle = DualPortWorkerHandle;
 
-    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
         Self {
             sink_left: None,
             sink_right: None,
             seq,
         }
     }
-    fn register_operator(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate) -> OpStoreHandle {
+    fn register_operator(ctx: &SimulationContext, template: &Self::NodeTemplate) -> OpStoreHandle {
         ctx.operator_record.dual.add(template.scattering_matrix)
     }
     fn handle_connection(&mut self, ctx: RunnerContext<Self>, exit_port_id: PortId, tx_port: TxPort) {
@@ -276,11 +277,17 @@ pub struct DualPortTemplate {
     pub scattering_matrix: SMatrix<Complex<f32>, 4, 4>,
 }
 
+impl NodeTemplate for DualPortTemplate {
+    fn rx_port_count(&self) -> usize {
+        2
+    }
+}
+
 impl NodeHandle for DualPortWorkerHandle {
     type CustomControlEvent = DualPortEvent;
     type NodeTemplate = DualPortTemplate;
 
-    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, seq: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
         Self {
             ports,
             control,

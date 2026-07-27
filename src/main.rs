@@ -70,16 +70,16 @@ where
 
 fn simple_epps_2spd() {
     // TODO: Make a more human friendly context initialization interface
-    let context = Arc::from(SimulationContext {
+    let context = SimulationContext {
         interaction_store: Arc::from(InteractionStore::new()),
-        config: ArcSwap::from_pointee(SimulationConfig {
+        config: Arc::from(ArcSwap::from_pointee(SimulationConfig {
             batch: BatchPolicy{
                 period: 20_000_000,
                 max_size: 200,
-            }}),
-        operator_record: OperatorRecord::new(),
-    });
-    let epps = EPPSRunner::spawn(context.clone(), 0, EPPSTemplate{
+            }})),
+        operator_record: Arc::from(OperatorRecord::new()),
+    };
+    let epps = EPPSRunner::spawn(&context, EPPSTemplate{
         signal_profile: WaveProfile{
             time_sigma: 150,
             wavelength: 1550.0,
@@ -101,12 +101,12 @@ fn simple_epps_2spd() {
     let spd_2_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let spd_1_sim_time = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let spd_2_sim_time = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let spd_1 = SPDRunner::spawn(context.clone(), 1, SPDTemplate {
+    let spd_1 = SPDRunner::spawn(&context, SPDTemplate {
         spd_id: 1,
         packet_counter: spd_1_counter.clone(),
         sim_time_ps: spd_1_sim_time.clone(),
     });
-    let spd_2 = SPDRunner::spawn(context.clone(), 1, SPDTemplate {
+    let spd_2 = SPDRunner::spawn(&context, SPDTemplate {
         spd_id: 2,
         packet_counter: spd_2_counter.clone(),
         sim_time_ps: spd_2_sim_time.clone(),
@@ -151,16 +151,16 @@ fn simple_epps_2spd() {
 }
 
 fn entanglement_swap(){
-    let context = Arc::from(SimulationContext {
+    let context = SimulationContext {
         interaction_store: Arc::from(InteractionStore::new()),
-        config: ArcSwap::from_pointee(SimulationConfig {
+        config: Arc::new(ArcSwap::from_pointee(SimulationConfig {
             batch: BatchPolicy{
                 period: 20_000_000,
                 max_size: 200,
-            }}),
-        operator_record: OperatorRecord::new(),
-    });
-    let epps_1 = EPPSRunner::spawn(context.clone(), 0, EPPSTemplate{
+            }})),
+        operator_record: Arc::from(OperatorRecord::new()),
+    };
+    let epps_1 = EPPSRunner::spawn(&context, EPPSTemplate{
         signal_profile: WaveProfile{
             time_sigma: 150,
             wavelength: 1550.0,
@@ -175,7 +175,7 @@ fn entanglement_swap(){
         density_matrix: outer_product(vector![Complex::ZERO, Complex::ONE, Complex::ONE, Complex::ZERO]),
         success_probability: 0.01,// 1% success rate results in 1.0E7 generations per second
     });
-    let epps_2 = EPPSRunner::spawn(context.clone(), 0, EPPSTemplate{
+    let epps_2 = EPPSRunner::spawn(&context, EPPSTemplate{
         signal_profile: WaveProfile{
             time_sigma: 150,
             wavelength: 1550.0,
@@ -196,7 +196,7 @@ fn entanglement_swap(){
     let s = Complex::new(std::f32::consts::FRAC_1_SQRT_2, 0.0);
     let i = Complex::new(0.0, std::f32::consts::FRAC_1_SQRT_2);
     let z = Complex::new(0.0f32, 0.0);
-    let bs_center = DualPortRunner::spawn(context.clone(), 2, DualPortTemplate {
+    let bs_center = DualPortRunner::spawn(&context, DualPortTemplate {
         scattering_matrix: matrix![
             s, z, i, z;
             z, s, z, i;
@@ -214,22 +214,22 @@ fn entanglement_swap(){
     let spd_2_sim_time = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let spd_3_sim_time = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let spd_4_sim_time = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let spd_1 = SPDRunner::spawn(context.clone(), 1, SPDTemplate {
+    let spd_1 = SPDRunner::spawn(&context, SPDTemplate {
         spd_id: 1,
         packet_counter: spd_1_counter.clone(),
         sim_time_ps: spd_1_sim_time.clone(),
     });
-    let spd_2 = SPDRunner::spawn(context.clone(), 1, SPDTemplate {
+    let spd_2 = SPDRunner::spawn(&context, SPDTemplate {
         spd_id: 2,
         packet_counter: spd_2_counter.clone(),
         sim_time_ps: spd_2_sim_time.clone(),
     });
-    let spd_3 = SPDRunner::spawn(context.clone(), 1, SPDTemplate {
+    let spd_3 = SPDRunner::spawn(&context, SPDTemplate {
         spd_id: 3,
         packet_counter: spd_3_counter.clone(),
         sim_time_ps: spd_3_sim_time.clone(),
     });
-    let spd_4 = SPDRunner::spawn(context.clone(), 1, SPDTemplate {
+    let spd_4 = SPDRunner::spawn(&context, SPDTemplate {
         spd_id: 4,
         packet_counter: spd_4_counter.clone(),
         sim_time_ps: spd_4_sim_time.clone(),

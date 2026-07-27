@@ -1,4 +1,3 @@
-#![allow(unused_imports)]
 use std::sync::mpsc::{sync_channel, channel, Sender, Receiver, SyncSender, SendError, RecvError};
 use std::sync::{Mutex, Condvar, Arc};
 use std::thread;
@@ -22,6 +21,7 @@ use crate::nodes::core::{
     NodeWorker,
     TimedControlEvent,
     RunnerContext,
+    NodeTemplate,
 };
 use crate::concurrency::interaction_store::{
     InteractionStore,
@@ -98,7 +98,7 @@ impl NodeWorker for EPPSWorker {
     type NodeTemplate = EPPSTemplate;
     type NodeHandle = EPPSWorkerHandle;
     
-    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
         Self {
             signal_profile: template.signal_profile.clone(),
             idler_profile: template.idler_profile.clone(),
@@ -110,7 +110,7 @@ impl NodeWorker for EPPSWorker {
             seq,
         }
     }
-    fn register_operator(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate) -> OpStoreHandle {
+    fn register_operator(ctx: &SimulationContext, template: &Self::NodeTemplate) -> OpStoreHandle {
         ctx.operator_record.epps.add(template.density_matrix)
     }
     fn handle_connection(&mut self, ctx: RunnerContext<Self>, exit_port_id: PortId, tx_port: TxPort) {
@@ -233,7 +233,7 @@ impl NodeHandle for EPPSWorkerHandle {
     type CustomControlEvent = EPPSEvent;
     type NodeTemplate = EPPSTemplate;
 
-    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, _ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, seq: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, _ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
         Self {
             control,
             seq,
@@ -310,4 +310,11 @@ pub struct EPPSTemplate {
     pub pump_frequency: f64,
     pub density_matrix: SMatrix<Complex<f32>, 4, 4>,
     pub success_probability: f64,
+}
+
+
+impl NodeTemplate for EPPSTemplate{
+    fn rx_port_count(&self) -> usize {
+        2
+    }
 }

@@ -16,7 +16,6 @@ use crate::types::core::{
 use crate::types::physics::PhotonicKrausOperators;
 
 
-
 pub struct SimulationConfig{
     pub batch: BatchPolicy,
 }
@@ -74,9 +73,32 @@ impl OperatorRecord {
     }
 }
 
-// this shall be enclosed in Arc, and all the constituants be thread safe
+#[derive(Clone)]
 pub struct SimulationContext {
     pub interaction_store: Arc<InteractionStore>,
-    pub config: ArcSwap<SimulationConfig>,
-    pub operator_record: OperatorRecord,
+    pub config: Arc<ArcSwap<SimulationConfig>>,
+    pub operator_record: Arc<OperatorRecord>,
 }
+// 
+// 
+// pub struct WaveProfile{
+//     pub time_sigma: u32,
+//     pub wavelength: f32,
+//     pub wavelength_sigma: f32,
+// }
+// 
+// pub struct EPPSBuilder {
+//     pub signal_profile: WaveProfile,
+//     pub idler_profile: WaveProfile,
+//     pub pump_frequency: f64,
+//     pub density_matrix: SMatrix<Complex<f32>, 4, 4>,
+//     pub success_probability: f64,
+//     pub context: &Arc<SimulationContext>
+// }
+// 
+// 
+// impl SimulationContext {
+//     fn epps(self: &Arc<Self>) -> EPPSBuilder {
+// 
+//     }
+// }

@@ -19,6 +19,7 @@ use crate::nodes::core::{
     NodeRunner,
     NodeHandle,
     NodeWorker,
+    NodeTemplate,
     TimedControlEvent,
     RunnerContext,
 };
@@ -82,7 +83,7 @@ impl NodeWorker for SPDWorker {
     type NodeTemplate = SPDTemplate;
     type NodeHandle = SPDWorkerHandle;
 
-    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
         let (tx, rx) = sync_channel::<WpBatch>(1);
         let (tx_settagger, rx_settagger) = channel::<SyncSender<TimeTagBatch>>();
         Self {
@@ -118,7 +119,7 @@ impl NodeWorker for SPDWorker {
             sim_time_ps: template.sim_time_ps.clone(),
         }
     }
-    fn register_operator(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate) -> OpStoreHandle {
+    fn register_operator(ctx: &SimulationContext, template: &Self::NodeTemplate) -> OpStoreHandle {
         // NOTE: SPD doesn't (shouldn't) register any operators
         // So we return a dummy value to conform to the trait shape
         0
@@ -216,11 +217,17 @@ pub struct SPDTemplate {
     pub sim_time_ps: Arc<std::sync::atomic::AtomicU64>,
 }
 
+impl NodeTemplate for SPDTemplate {
+    fn rx_port_count(&self) -> usize {
+        1
+    }
+}
+
 impl NodeHandle for SPDWorkerHandle {
     type CustomControlEvent = SPDEvent;
     type NodeTemplate = SPDTemplate;
 
-    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, seq: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
         Self {
             ports,
             control,

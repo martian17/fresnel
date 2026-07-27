@@ -51,6 +51,7 @@ pub struct BatchConstraint {
     pub max_size: usize,
 }
 
+#[derive(Clone)]
 pub struct BatchPolicy{
     pub period: u64,// picoseconds
     pub max_size: usize,
