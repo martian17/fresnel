@@ -15,7 +15,7 @@ use crate::types::core::{
 };
 use crate::types::physics::PhotonicKrausOperators;
 
-
+#[derive(Clone)]
 pub struct SimulationConfig{
     pub batch: BatchPolicy,
 }
@@ -79,6 +79,30 @@ pub struct SimulationContext {
     pub config: Arc<ArcSwap<SimulationConfig>>,
     pub operator_record: Arc<OperatorRecord>,
 }
+
+impl SimulationContext {
+    pub fn new() -> Self {
+        SimulationContext {
+            interaction_store: Arc::new(InteractionStore::new()),
+            config: Arc::new(ArcSwap::from_pointee(SimulationConfig {
+                batch: BatchPolicy{
+                    period: 20_000_000,
+                    max_size: 200,
+                }})),
+            operator_record: Arc::new(OperatorRecord::new()),
+        }
+    }
+    pub fn update_config<F>(self, updater: F) -> Self
+    where
+        F: FnOnce(&mut SimulationConfig),
+    {
+        let mut config = (**self.config.load()).clone();
+        updater(&mut config);
+        self.config.store(Arc::new(config));
+        self
+    }
+}
+
 // 
 // 
 // pub struct WaveProfile{
