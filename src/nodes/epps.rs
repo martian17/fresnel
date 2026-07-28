@@ -1,21 +1,13 @@
-use std::sync::mpsc::{sync_channel, channel, Sender, Receiver, SyncSender, SendError, RecvError};
-use std::sync::{Mutex, Condvar, Arc};
-use std::thread;
-use std::collections::BinaryHeap;
+use std::sync::mpsc::{Sender};
+use std::sync::{Arc};
 
 use nalgebra::{SMatrix, Complex, vector};
-use smallvec::{
-    SmallVec,
-    smallvec,
-};
 use rand;
 
 use crate::nodes::core::{
     WavePacket,
     WpBatch,
     TxPort,
-    RxPort,
-    // WorkerHandle,
     NodeRunner,
     NodeHandle,
     NodeWorker,
@@ -24,7 +16,6 @@ use crate::nodes::core::{
     NodeTemplate,
 };
 use crate::concurrency::interaction_store::{
-    InteractionStore,
     InteractionCell,
     IslandOfInteraction,
     Operator,
@@ -35,14 +26,8 @@ use crate::concurrency::context::{
 };
 
 use crate::types::core::{
-    PortAddress,
     Time,
     PortId,
-    BatchConstraint,
-    SinkModeLocation,
-};
-use crate::types::physics::{
-    PhotonicKrausOperators,
 };
 use crate::quantum::util::{
     outer_product,

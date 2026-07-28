@@ -1,5 +1,3 @@
-#![allow(unused_imports)]
-use smallvec::SmallVec;
 use nalgebra::{SMatrix, Complex};
 use arc_swap::{ArcSwap, Guard};
 use std::sync::Arc;
@@ -153,40 +151,16 @@ impl SimulationContext {
         self.config.store(Arc::new(config));
         self
     }
-    pub fn epps(&self) -> EPPSBuilder {
+    pub fn epps(&self) -> EPPSBuilder<'_> {
         EPPSBuilder::new(self)
     }
-    pub fn single(&self) -> SinglePortBuilder {
+    pub fn single(&self) -> SinglePortBuilder<'_> {
         SinglePortBuilder::new(self)
     }
-    pub fn dual(&self) -> DualPortBuilder {
+    pub fn dual(&self) -> DualPortBuilder<'_> {
         DualPortBuilder::new(self)
     }
-    pub fn spd(&self) -> SPDBuilder {
+    pub fn spd(&self) -> SPDBuilder<'_> {
         SPDBuilder::new(self)
     }
 }
-
-// 
-// 
-// pub struct WaveProfile{
-//     pub time_sigma: u32,
-//     pub wavelength: f32,
-//     pub wavelength_sigma: f32,
-// }
-// 
-// pub struct EPPSBuilder {
-//     pub signal_profile: WaveProfile,
-//     pub idler_profile: WaveProfile,
-//     pub pump_frequency: f64,
-//     pub density_matrix: SMatrix<Complex<f32>, 4, 4>,
-//     pub success_probability: f64,
-//     pub context: &Arc<SimulationContext>
-// }
-// 
-// 
-// impl SimulationContext {
-//     fn epps(self: &Arc<Self>) -> EPPSBuilder {
-// 
-//     }
-// }

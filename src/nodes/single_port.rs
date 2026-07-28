@@ -1,17 +1,13 @@
-#![allow(unused_imports)]
-use std::sync::mpsc::{sync_channel, channel, Sender, Receiver, SyncSender, SendError, RecvError};
-use std::sync::{Mutex, Condvar, Arc};
-use std::thread;
-use std::collections::BinaryHeap;
+use std::sync::mpsc::{Sender};
+use std::sync::{Arc};
 
-use nalgebra::{SMatrix, Complex, matrix};
-use smallvec::{SmallVec, smallvec};
+use nalgebra::{Complex, matrix};
+use smallvec::{smallvec};
 
 use crate::nodes::core::{
     WavePacket,
     WpBatch,
     TxPort,
-    RxPort,
     NodeRunner,
     NodeHandle,
     NodeWorker,
@@ -20,8 +16,6 @@ use crate::nodes::core::{
     RunnerContext,
 };
 use crate::concurrency::interaction_store::{
-    InteractionStore,
-    InteractionCell,
     Operator,
 };
 use crate::concurrency::context::{
@@ -30,11 +24,8 @@ use crate::concurrency::context::{
 use crate::concurrency::snowflake;
 
 use crate::types::core::{
-    PortAddress,
     Time,
     PortId,
-    BatchConstraint,
-    SinkModeLocation,
 };
 use crate::types::physics::{
     PhotonicKrausOperators,

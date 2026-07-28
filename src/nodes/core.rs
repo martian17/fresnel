@@ -1,20 +1,16 @@
 use std::sync::mpsc::{sync_channel, channel, Receiver, SyncSender, Sender, SendError};
 use std::cmp::Ordering;
-use std::sync::{Mutex, Condvar, Arc};
 use std::thread;
 use std::collections::BinaryHeap;
-use std::sync::mpsc;
 use rand::prelude::*;
 use rand_distr::StandardNormal;
 use std::f64::consts::PI;
 
 use crate::concurrency::context::{
     SimulationContext,
-    OpStoreHandle,
 };
 
 use crate::types::core::{
-    PortAddress,
     Time,
     PortId,
     BatchConstraint,

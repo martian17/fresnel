@@ -1,8 +1,6 @@
-use std::sync::mpsc::{sync_channel, channel, Receiver, SyncSender, Sender, SendError, RecvTimeoutError};
-use std::cmp::Ordering;
-use std::sync::{Mutex, Condvar, Arc};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, Sender, RecvTimeoutError};
+use std::sync::{Arc};
 use std::thread;
-use std::collections::BinaryHeap;
 use std::sync::mpsc;
 use std::fs::File;
 use std::path::{Path, PathBuf};
