@@ -13,10 +13,8 @@ use crate::types::core::WrappingIterU32;
 use crate::types::core::{
     OpHandle,
     PortId,
-    SinkModeId,
     WpSnowflake,
     Time,
-    SinkModeLocation,
     ModeIndex,
 };
 use crate::util::set::U32OpenAddressSet;
@@ -80,55 +78,6 @@ pub enum Operator {
 }
 
 impl Operator {
-    // // SinkModeId and PortId are different, since DualBivariate has 4 imaginary exit ports
-    // // Target port id is assumed known
-    // pub fn set_sink(&mut self, exit_port: SinkModeId, target: OpHandle) {
-    //     match self {
-    //         Operator::EPPS {sink_signal, sink_idler, ..} => {
-    //             // sink_signal: (OpHandle 0, PortId),
-    //             // sink_idler: (OpHandle 1, PortId),
-    //             match exit_port {
-    //                 0 => sink_signal.0 = target,
-    //                 1 => sink_idler.0 = target,
-    //                 _ => panic!("Operator::EPPS exit port out of range"),
-    //             }
-    //         },
-    //         Operator::Single {sink, ..} => {
-    //             // sink: (OpHandle 0, PortId),
-    //             match exit_port {
-    //                 0 => sink.0 = target,
-    //                 _ => panic!("Operator::Single exit port out of range"),
-    //             }
-    //         },
-    //         Operator::DualBivariate{sink_left, sink_right, ..} => {
-    //             // sink_left: (OpHandle, OpHandle, PortId),
-    //             // sink_right: (OpHandle, OpHandle, PortId),
-    //             match exit_port {
-    //                 0 => sink_left.0 = target,
-    //                 1 => sink_left.1 = target,
-    //                 2 => sink_right.0 = target,
-    //                 3 => sink_right.1 = target,
-    //                 _ => panic!("Operator::DualBivariate exit port out of range"),
-    //             }
-    //         },
-    //         // 2x2 component without interference. One port at a time
-    //         Operator::DualUnivariate {sink_left, sink_right, ..} => {
-    //             // sink_left: (OpHandle, PortId),
-    //             // sink_right: (OpHandle, PortId),
-    //             match exit_port {
-    //                 0 => sink_left.0 = target,
-    //                 2 => sink_right.0 = target,
-    //                 _ => panic!("Operator::DualUnivariate exit port out of range"),
-    //             }
-    //         },
-    //         Operator::SPD{..} => {
-    //             panic!("Operator::SPD should not have a sink port");
-    //         },
-    //         Operator::Dump => {
-    //             panic!("Operator::Dump should not have a sink port");
-    //         },
-    //     }
-    // }
     pub fn clone_with_offset(&self, offset: ModeIndex) -> Operator {
         let mut cloned = self.clone();
         match &mut cloned {
@@ -325,7 +274,7 @@ impl CollapseResult {
         self.ref_cnt -= 1;
         match result {
             WpResult::Empty{..} => None,
-            WpResult::Success{..} => Some(wp.time),
+            WpResult::Success{..} => Some(wp.sample_time()),
         }
     }
     fn is_retirable(&self) -> bool {

@@ -1,8 +1,8 @@
-#![allow(unused_imports)]
-use smallvec::SmallVec;
 use nalgebra::{SMatrix, Complex};
 use arc_swap::{ArcSwap, Guard};
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use crossbeam_utils::CachePadded;
 
 // config and OpStore are stored under this file, 
 
@@ -15,11 +15,22 @@ use crate::types::core::{
 };
 use crate::types::physics::PhotonicKrausOperators;
 
-
-
+#[derive(Clone)]
 pub struct SimulationConfig{
     pub batch: BatchPolicy,
 }
+use crate::nodes::epps::{
+    EPPSBuilder,
+};
+use crate::nodes::single_port::{
+    SinglePortBuilder,
+};
+use crate::nodes::dual_port::{
+    DualPortBuilder,
+};
+use crate::nodes::spd::{
+    SPDBuilder,
+};
 
 
 
@@ -74,9 +85,82 @@ impl OperatorRecord {
     }
 }
 
-// this shall be enclosed in Arc, and all the constituants be thread safe
+pub struct BaseMetrics {
+    pub packet_consumed: AtomicU64,
+    pub packet_generated: AtomicU64,
+    pub sim_time: AtomicU64,
+}
+
+
+pub struct SPDMetrics {
+    pub base: BaseMetrics,
+    pub clicks: AtomicU64,
+    pub dark_counts: AtomicU64,
+}
+
+
+pub struct DualMetrics {
+    pub base: BaseMetrics,
+    pub merged_states: AtomicU64,
+    pub paired_packets: AtomicU64,
+    pub single_packets: AtomicU64,
+    pub multi_packet_event: AtomicU64,
+    pub pair_count: AtomicU64,
+}
+
+pub struct TelemetryRecord {
+    pub epps: boxcar::Vec<CachePadded<BaseMetrics>>,
+    pub single: boxcar::Vec<CachePadded<BaseMetrics>>,
+    pub dual: boxcar::Vec<CachePadded<DualMetrics>>,
+    pub spd: boxcar::Vec<CachePadded<SPDMetrics>>,
+}
+
+
+#[derive(Clone)]
 pub struct SimulationContext {
     pub interaction_store: Arc<InteractionStore>,
-    pub config: ArcSwap<SimulationConfig>,
-    pub operator_record: OperatorRecord,
+    pub config: Arc<ArcSwap<SimulationConfig>>,
+    pub operator_record: Arc<OperatorRecord>,
+    pub telemetry: Arc<TelemetryRecord>,
+}
+
+impl SimulationContext {
+    pub fn new() -> Self {
+        SimulationContext {
+            interaction_store: Arc::new(InteractionStore::new()),
+            config: Arc::new(ArcSwap::from_pointee(SimulationConfig {
+                batch: BatchPolicy{
+                    period: 20_000_000,
+                    max_size: 200,
+                }})),
+            operator_record: Arc::new(OperatorRecord::new()),
+            telemetry: Arc::new(TelemetryRecord {
+                epps: boxcar::Vec::new(),
+                single: boxcar::Vec::new(),
+                dual: boxcar::Vec::new(),
+                spd: boxcar::Vec::new(),
+            })
+        }
+    }
+    pub fn update_config<F>(self, updater: F) -> Self
+    where
+        F: FnOnce(&mut SimulationConfig),
+    {
+        let mut config = (**self.config.load()).clone();
+        updater(&mut config);
+        self.config.store(Arc::new(config));
+        self
+    }
+    pub fn epps(&self) -> EPPSBuilder<'_> {
+        EPPSBuilder::new(self)
+    }
+    pub fn single(&self) -> SinglePortBuilder<'_> {
+        SinglePortBuilder::new(self)
+    }
+    pub fn dual(&self) -> DualPortBuilder<'_> {
+        DualPortBuilder::new(self)
+    }
+    pub fn spd(&self) -> SPDBuilder<'_> {
+        SPDBuilder::new(self)
+    }
 }

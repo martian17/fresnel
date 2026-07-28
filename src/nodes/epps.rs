@@ -1,30 +1,21 @@
-#![allow(unused_imports)]
-use std::sync::mpsc::{sync_channel, channel, Sender, Receiver, SyncSender, SendError, RecvError};
-use std::sync::{Mutex, Condvar, Arc};
-use std::thread;
-use std::collections::BinaryHeap;
+use std::sync::mpsc::{Sender};
+use std::sync::{Arc};
 
-use nalgebra::{SMatrix, Complex};
-use smallvec::{
-    SmallVec,
-    smallvec,
-};
+use nalgebra::{SMatrix, Complex, vector};
 use rand;
 
 use crate::nodes::core::{
     WavePacket,
     WpBatch,
     TxPort,
-    RxPort,
-    // WorkerHandle,
     NodeRunner,
     NodeHandle,
     NodeWorker,
     TimedControlEvent,
     RunnerContext,
+    NodeTemplate,
 };
 use crate::concurrency::interaction_store::{
-    InteractionStore,
     InteractionCell,
     IslandOfInteraction,
     Operator,
@@ -35,14 +26,11 @@ use crate::concurrency::context::{
 };
 
 use crate::types::core::{
-    PortAddress,
     Time,
     PortId,
-    BatchConstraint,
-    SinkModeLocation,
 };
-use crate::types::physics::{
-    PhotonicKrausOperators,
+use crate::quantum::util::{
+    outer_product,
 };
 use crate::concurrency::snowflake;
 
@@ -83,7 +71,7 @@ pub struct EPPSWorker {
     idler_sink: Option<TxPort>,
     pump_period: f64,
     success_probability: f64,
-    seq: OpStoreHandle,
+    worker_id: OpStoreHandle,
     time_frac: f64,
 }
 
@@ -98,7 +86,8 @@ impl NodeWorker for EPPSWorker {
     type NodeTemplate = EPPSTemplate;
     type NodeHandle = EPPSWorkerHandle;
     
-    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate) -> Self {
+        let worker_id = ctx.operator_record.epps.add(template.density_matrix);
         Self {
             signal_profile: template.signal_profile.clone(),
             idler_profile: template.idler_profile.clone(),
@@ -107,11 +96,11 @@ impl NodeWorker for EPPSWorker {
             pump_period: 1.0E+12/template.pump_frequency,
             success_probability: template.success_probability,
             time_frac: 0.0,
-            seq,
+            worker_id,
         }
     }
-    fn register_operator(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate) -> OpStoreHandle {
-        ctx.operator_record.epps.add(template.density_matrix)
+    fn id(&self) -> u16 {
+        self.worker_id
     }
     fn handle_connection(&mut self, ctx: RunnerContext<Self>, exit_port_id: PortId, tx_port: TxPort) {
         match exit_port_id {
@@ -183,7 +172,7 @@ impl NodeWorker for EPPSWorker {
             let signal_mode = island.register_wavepacket(&signal);
             let idler_mode = island.register_wavepacket(&idler);
             island.operators.push(Operator::EPPS{
-                store_handle: self.seq,
+                store_handle: self.worker_id,
                 time: signal.time,
                 source_modes: [],
                 sink_modes: [
@@ -225,7 +214,7 @@ pub struct EPPSWorkerHandle {
     // pub control: Sender<EPPSControlEvent>,
 
     pub control: Sender<TimedControlEvent<EPPSEvent>>,
-    pub seq: OpStoreHandle,// index in the operator store
+    pub worker_id: OpStoreHandle,// index in the operator store
     pub join_handle: std::thread::JoinHandle<()>,
 }
 
@@ -233,10 +222,10 @@ impl NodeHandle for EPPSWorkerHandle {
     type CustomControlEvent = EPPSEvent;
     type NodeTemplate = EPPSTemplate;
 
-    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, _ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, worker_id: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, _ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
         Self {
             control,
-            seq,
+            worker_id,
             join_handle,
         }
     }
@@ -279,7 +268,7 @@ impl EPPSWorkerHandle {
     }
 
     fn set_density_matrix(&self, ctx: Arc<SimulationContext>, density_matrix: SMatrix<Complex<f32>, 4, 4>, time: Time) {
-        ctx.operator_record.epps.set(self.seq, density_matrix, time);
+        ctx.operator_record.epps.set(self.worker_id, density_matrix, time);
     }
 }
 
@@ -310,4 +299,59 @@ pub struct EPPSTemplate {
     pub pump_frequency: f64,
     pub density_matrix: SMatrix<Complex<f32>, 4, 4>,
     pub success_probability: f64,
+}
+
+pub struct EPPSBuilder<'a> {
+    template: EPPSTemplate,
+    ctx: &'a SimulationContext
+}
+
+impl<'a> EPPSBuilder<'a> {
+    pub fn new(ctx: &'a SimulationContext) -> Self {
+        let default_wave_profile = WaveProfile{
+            time_sigma: 75,
+            wavelength: 1550.0,
+            // TODO: Find a typical wavelength $\sigma$
+            wavelength_sigma: 1.0,
+        };
+        EPPSBuilder {
+            template: EPPSTemplate{
+                signal_profile: default_wave_profile.clone(),
+                idler_profile: default_wave_profile.clone(),
+                pump_frequency: 1.0E+9,
+                density_matrix: outer_product(vector![Complex::ZERO, Complex::ONE, Complex::ONE, Complex::ZERO]),
+                success_probability: 0.01,// 1% success rate results in 1.0E7 generations per second
+            },
+            ctx,
+        }
+    }
+    pub fn signal_profile(mut self, profile: WaveProfile) -> Self {
+        self.template.signal_profile = profile;
+        self
+    }
+    pub fn idler_profile(mut self, profile: WaveProfile) -> Self {
+        self.template.idler_profile = profile;
+        self
+    }
+    pub fn pump_frequency(mut self, pump_frequency: f64) -> Self {
+        self.template.pump_frequency = pump_frequency;
+        self
+    }
+    pub fn density_matrix(mut self, density_matrix: SMatrix<Complex<f32>, 4, 4>) -> Self {
+        self.template.density_matrix = density_matrix;
+        self
+    }
+    pub fn success_probability(mut self, success_probability: f64) -> Self {
+        self.template.success_probability = success_probability;
+        self
+    }
+    pub fn spawn(self) -> EPPSWorkerHandle {
+        EPPSRunner::spawn(self.ctx, self.template)
+    }
+}
+
+impl NodeTemplate for EPPSTemplate{
+    fn rx_port_count(&self) -> usize {
+        2
+    }
 }

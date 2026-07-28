@@ -1,46 +1,31 @@
-#![allow(unused_imports)]
-use std::sync::mpsc::{sync_channel, channel, Sender, Receiver, SyncSender, SendError, RecvError};
-use std::sync::{Mutex, Condvar, Arc};
-use std::thread;
-use std::collections::BinaryHeap;
+use std::sync::mpsc::{Sender};
+use std::sync::{Arc};
 
-use nalgebra::{SMatrix, Complex};
-use smallvec::SmallVec;
+use nalgebra::{SMatrix, Complex, matrix};
 
 use crate::nodes::core::{
     WavePacket,
     WpBatch,
     TxPort,
-    RxPort,
-    // WorkerHandle,
     NodeRunner,
     NodeHandle,
     NodeWorker,
+    NodeTemplate,
     TimedControlEvent,
     RunnerContext,
 };
 use crate::concurrency::interaction_store::{
-    InteractionStore,
-    InteractionCell,
     Operator,
 };
 use crate::concurrency::context::{
     SimulationContext,
     OpStoreHandle,
 };
-use crate::concurrency::snowflake;
 
 use crate::types::core::{
-    PortAddress,
     Time,
     PortId,
-    BatchConstraint,
-    SinkModeLocation,
 };
-use crate::types::physics::{
-    PhotonicKrausOperators,
-};
-use crate::util::set::U32OpenAddressSet;
 
 pub type DualPortRunner = NodeRunner<DualPortWorker>;
 
@@ -50,7 +35,7 @@ pub enum DualPortEvent {}
 pub struct DualPortWorker {
     sink_left: Option<TxPort>,
     sink_right: Option<TxPort>,
-    seq: OpStoreHandle,
+    worker_id: OpStoreHandle,
 }
 
 impl NodeWorker for DualPortWorker {
@@ -58,15 +43,29 @@ impl NodeWorker for DualPortWorker {
     type NodeTemplate = DualPortTemplate;
     type NodeHandle = DualPortWorkerHandle;
 
-    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate) -> Self {
+        let worker_id = ctx.operator_record.dual.add(template.scattering_matrix);
+        // TODO: Partially utilized. Implement bitflag and full recording
+        ctx.telemetry.dual.push(crossbeam_utils::CachePadded::new(crate::concurrency::context::DualMetrics{
+            base: crate::concurrency::context::BaseMetrics{
+                packet_consumed: 0.into(),
+                packet_generated: 0.into(),
+                sim_time: 0.into(),
+            },
+            merged_states: 0.into(),
+            multi_packet_event: 0.into(),
+            pair_count: 0.into(),
+            paired_packets: 0.into(),
+            single_packets: 0.into(),
+        }));
         Self {
             sink_left: None,
             sink_right: None,
-            seq,
+            worker_id,
         }
     }
-    fn register_operator(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate) -> OpStoreHandle {
-        ctx.operator_record.dual.add(template.scattering_matrix)
+    fn id(&self) -> u16 {
+        self.worker_id
     }
     fn handle_connection(&mut self, ctx: RunnerContext<Self>, exit_port_id: PortId, tx_port: TxPort) {
         match exit_port_id {
@@ -101,7 +100,7 @@ impl NodeWorker for DualPortWorker {
         let mut left_batch = left_port.get_batch(batch_constraint.clone());
         let mut right_batch = right_port.get_batch(batch_constraint.clone());
         let start_time = left_batch.start_time.min(right_batch.start_time);
-        let end_time = left_batch.end_time.min(right_batch.end_time);
+        let mut end_time = left_batch.end_time.min(right_batch.end_time);
 
         // Temporal boundary condition. We don't want any packet clusters (island of interaction)
         // cross batch boundary
@@ -110,10 +109,18 @@ impl NodeWorker for DualPortWorker {
         loop {
             let left_edge = left_batch.trailing_edge();
             while let Some(wp) = right_port.get_overlapping_or_before(left_edge) {
+                if wp.time > end_time {
+                    // TODO: Consider using leading edge for the time. Also need to update EPPS if
+                    // we do.
+                    end_time = wp.time;
+                }
                 right_batch.push(wp);
             }
             let right_edge = right_batch.trailing_edge();
             while let Some(wp) = left_port.get_overlapping_or_before(right_edge) {
+                if wp.time > end_time {
+                    end_time = wp.time;
+                }
                 left_batch.push(wp);
             }
             if right_port.is_strictly_after(left_batch.trailing_edge()) {
@@ -121,6 +128,10 @@ impl NodeWorker for DualPortWorker {
             }
         }
         let mut slice = ctx.global.interaction_store.get_states(vec![&mut left_batch.batch, &mut right_batch.batch]);
+
+        ctx.global.telemetry.dual[self.worker_id.into()].base.packet_consumed.fetch_add((left_batch.len() + right_batch.len()) as u64, std::sync::atomic::Ordering::Relaxed);
+        ctx.global.telemetry.dual[self.worker_id.into()].base.sim_time.store(end_time, std::sync::atomic::Ordering::Relaxed);
+
 
         // first pass: merge all the states
         {
@@ -219,7 +230,7 @@ impl NodeWorker for DualPortWorker {
                     let (late_src, late_left, late_right) = mode_map_late[i];
                     is_univariate = false;
                     state.operators.push(Operator::DualBivariate{
-                        store_handle: self.seq,
+                        store_handle: self.worker_id,
                         time: early.time,
                         packet_indistinguishability: early.indistinguishability(late),
                         source_modes: [early_src, late_src],
@@ -230,7 +241,7 @@ impl NodeWorker for DualPortWorker {
                 if is_univariate {
                     let (early_src, early_left, early_right) = mode_map_early[*early_index];
                     state.operators.push(Operator::DualUnivariate{
-                        store_handle: self.seq,
+                        store_handle: self.worker_id,
                         time: early.time,
                         incidence_port_id: incident_port,
                         source_modes: [early_src],
@@ -268,7 +279,7 @@ impl NodeWorker for DualPortWorker {
 pub struct DualPortWorkerHandle {
     pub ports: Vec<TxPort>,
     pub control: Sender<TimedControlEvent<DualPortEvent>>,
-    pub seq: OpStoreHandle,// index in the operator store
+    pub worker_id: OpStoreHandle,// index in the operator store
     pub join_handle: std::thread::JoinHandle<()>,
 }
 
@@ -276,15 +287,55 @@ pub struct DualPortTemplate {
     pub scattering_matrix: SMatrix<Complex<f32>, 4, 4>,
 }
 
+impl NodeTemplate for DualPortTemplate {
+    fn rx_port_count(&self) -> usize {
+        2
+    }
+}
+
+pub struct DualPortBuilder<'a> {
+    template: DualPortTemplate,
+    ctx: &'a SimulationContext
+}
+
+impl<'a> DualPortBuilder<'a> {
+    pub fn new(ctx: &'a SimulationContext) -> Self {
+        // symmetric 50:50 beamsplitter, polarization preserving.
+        // Mode basis: (left_H, left_V, right_H, right_V); the reflected path
+        // picks up the i phase (BS ⊗ I_pol)
+        let s = Complex::new(std::f32::consts::FRAC_1_SQRT_2, 0.0);
+        let i = Complex::new(0.0, std::f32::consts::FRAC_1_SQRT_2);
+        let z = Complex::new(0.0f32, 0.0);
+        DualPortBuilder {
+            template: DualPortTemplate {
+                scattering_matrix: matrix![
+                    s, z, i, z;
+                    z, s, z, i;
+                    i, z, s, z;
+                    z, i, z, s;
+                ],
+            },
+            ctx,
+        }
+    }
+    pub fn scattering_matrix(mut self, scattering_matrix: SMatrix<Complex<f32>, 4, 4>) -> Self {
+        self.template.scattering_matrix = scattering_matrix;
+        self
+    }
+    pub fn spawn(self) -> DualPortWorkerHandle {
+        DualPortRunner::spawn(self.ctx, self.template)
+    }
+}
+
 impl NodeHandle for DualPortWorkerHandle {
     type CustomControlEvent = DualPortEvent;
     type NodeTemplate = DualPortTemplate;
 
-    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, worker_id: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
         Self {
             ports,
             control,
-            seq,
+            worker_id,
             join_handle,
         }
     }
@@ -302,6 +353,6 @@ impl NodeHandle for DualPortWorkerHandle {
 impl DualPortWorkerHandle {
     // Human facing API (can be slow). ctx is cloned for now
     fn set_scattering_matrix(&self, ctx: Arc<SimulationContext>, scattering_matrix: SMatrix<Complex<f32>, 4, 4>, time: Time) {
-        ctx.operator_record.dual.set(self.seq, scattering_matrix, time);
+        ctx.operator_record.dual.set(self.worker_id, scattering_matrix, time);
     }
 }

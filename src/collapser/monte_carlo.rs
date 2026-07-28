@@ -9,7 +9,6 @@ use crate::types::core::{
     Time,
 };
 
-use rand::rng;
 use smallvec::SmallVec;
 
 pub fn mock_collapse(island: &IslandOfInteraction) -> CollapseResult {

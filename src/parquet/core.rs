@@ -1,8 +1,6 @@
-use std::sync::mpsc::{sync_channel, channel, Receiver, SyncSender, Sender, SendError, RecvTimeoutError};
-use std::cmp::Ordering;
-use std::sync::{Mutex, Condvar, Arc};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, Sender, RecvTimeoutError};
+use std::sync::{Arc};
 use std::thread;
-use std::collections::BinaryHeap;
 use std::sync::mpsc;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -35,6 +33,7 @@ enum ParquetWorkerEvent {
     // RemoveChannel(u16),
 
     Start,
+    Stop,
     // Stop(Time)
 }
 
@@ -107,11 +106,26 @@ impl ParquetWorker {
                 },
                 ParquetWorkerEvent::Start => {
                     break;
-                }
+                },
+                ParquetWorkerEvent::Stop => {
+                    panic!("Stopped before starting");
+                },
             }
         }
         assert!(!self.rx_channels.is_empty(), "ParquetWorker started with no channels");
         loop {
+            match self.ctrl_channel.try_recv() {
+                Ok(ParquetWorkerEvent::Stop) => {
+                    println!("stopping");
+                    return;
+                },
+                Err(_) => {},
+                Ok(_) => {
+                    panic!("Unexpected control event!");
+                }
+
+
+            }
             // wait on the laggard, since only its progress can advance the safe
             // point. The timeout matters: blocking here indefinitely while the
             // other taggers fill up would backpressure their claimers (and in
@@ -179,7 +193,12 @@ impl ParquetHandle {
     pub fn start(&self) {
         self.ctrl_channel.send(ParquetWorkerEvent::Start).unwrap();
     }
-    pub fn join(self) {
+    // pub fn join(self) {
+    //     self.thread_handle.join().unwrap();
+    //     self.writer_thread_handle.join().unwrap();
+    // }
+    pub fn stop(self) {
+        self.ctrl_channel.send(ParquetWorkerEvent::Stop).unwrap();
         self.thread_handle.join().unwrap();
         self.writer_thread_handle.join().unwrap();
     }
@@ -244,6 +263,7 @@ impl TimeTagStreamParquetWriter {
             }
 
             if array_length >= self.max_chunk_rows {
+                println!("actually writing");
                 // write current batch into current file
                 let batch = RecordBatch::try_new(
                     schema.clone(),

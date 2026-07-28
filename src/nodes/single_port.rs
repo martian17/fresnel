@@ -1,40 +1,31 @@
-#![allow(unused_imports)]
-use std::sync::mpsc::{sync_channel, channel, Sender, Receiver, SyncSender, SendError, RecvError};
-use std::sync::{Mutex, Condvar, Arc};
-use std::thread;
-use std::collections::BinaryHeap;
+use std::sync::mpsc::{Sender};
+use std::sync::{Arc};
 
-use nalgebra::{SMatrix, Complex};
-use smallvec::SmallVec;
+use nalgebra::{Complex, matrix};
+use smallvec::{smallvec};
 
 use crate::nodes::core::{
     WavePacket,
     WpBatch,
     TxPort,
-    RxPort,
     NodeRunner,
     NodeHandle,
     NodeWorker,
+    NodeTemplate,
     TimedControlEvent,
     RunnerContext,
 };
 use crate::concurrency::interaction_store::{
-    InteractionStore,
-    InteractionCell,
     Operator,
 };
 use crate::concurrency::context::{
     SimulationContext,
-    OpStoreHandle,
 };
 use crate::concurrency::snowflake;
 
 use crate::types::core::{
-    PortAddress,
     Time,
     PortId,
-    BatchConstraint,
-    SinkModeLocation,
 };
 use crate::types::physics::{
     PhotonicKrausOperators,
@@ -53,7 +44,7 @@ pub struct SinglePortWorker {
     // which is still not out of the realm of possibility, especially with satellite based
     // communication, so we still use u64 here
     delay: u64,
-    seq: OpStoreHandle,
+    worker_id: u16,
 }
 
 impl NodeWorker for SinglePortWorker {
@@ -61,15 +52,22 @@ impl NodeWorker for SinglePortWorker {
     type NodeTemplate = SinglePortTemplate;
     type NodeHandle = SinglePortWorkerHandle;
 
-    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate) -> Self {
+        // register operator, telemetry, etc.
+        let worker_id = ctx.operator_record.single.add(template.kraus_operators.clone());
+        ctx.telemetry.single.push(crossbeam_utils::CachePadded::new(crate::concurrency::context::BaseMetrics{
+            packet_consumed: 0.into(),
+            packet_generated: 0.into(),
+            sim_time: 0.into(),
+        }));
         Self {
             sink: None,
             delay: template.delay,
-            seq,
+            worker_id,
         }
     }
-    fn register_operator(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate) -> OpStoreHandle {
-        ctx.operator_record.single.add(template.kraus_operators.clone())
+    fn id(&self) -> u16 {
+        self.worker_id
     }
     fn handle_connection(&mut self, ctx: RunnerContext<Self>, exit_port_id: PortId, tx_port: TxPort) {
         if exit_port_id != 0 {
@@ -88,6 +86,8 @@ impl NodeWorker for SinglePortWorker {
         let port = &mut ctx.runner.rx_ports[0];
         let batch_policy = &ctx.global.config.load().batch;
         let mut batch = port.get_batch(batch_policy.get_constraint(port.current_time));
+        ctx.global.telemetry.single[self.worker_id.into()].packet_consumed.fetch_add(batch.batch.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        ctx.global.telemetry.single[self.worker_id.into()].sim_time.store(batch.end_time, std::sync::atomic::Ordering::Relaxed);
 
         let mut slice = ctx.global.interaction_store.get_states(vec![&mut batch.batch]);
         let mut sink_batch: Vec<WavePacket> = Vec::new();
@@ -110,7 +110,7 @@ impl NodeWorker for SinglePortWorker {
             let source_mode = state.extract_wavepacket(&wp_source);
             let sink_mode = state.register_wavepacket(&wp_sink);
             state.operators.push(Operator::Single{
-                store_handle: self.seq,
+                store_handle: self.worker_id,
                 time: wp_source.time,
                 // these are placeholders. It will be replaced later using set_sink
                 source_modes: [source_mode],
@@ -150,7 +150,7 @@ impl NodeWorker for SinglePortWorker {
 pub struct SinglePortWorkerHandle {
     pub ports: Vec<TxPort>,
     pub control: Sender<TimedControlEvent<SinglePortEvent>>,
-    pub seq: OpStoreHandle,// index in the operator store
+    pub worker_id: u16,// index in the operator store
     pub join_handle: std::thread::JoinHandle<()>,
 }
 
@@ -160,15 +160,55 @@ pub struct SinglePortTemplate {
     pub delay: u64,
 }
 
+impl NodeTemplate for SinglePortTemplate {
+    fn rx_port_count(&self) -> usize {
+        1
+    }
+}
+
+pub struct SinglePortBuilder<'a> {
+    template: SinglePortTemplate,
+    ctx: &'a SimulationContext
+}
+
+impl<'a> SinglePortBuilder<'a> {
+    pub fn new(ctx: &'a SimulationContext) -> Self {
+        SinglePortBuilder {
+            template: SinglePortTemplate {
+                kraus_operators: smallvec![
+                    matrix![
+                        Complex::new(1.0, 0.0), Complex::new(0.0, 0.0), Complex::new(0.0, 0.0);
+                        Complex::new(0.0, 0.0), Complex::new(1.0, 0.0), Complex::new(0.0, 0.0);
+                        Complex::new(0.0, 0.0), Complex::new(0.0, 0.0), Complex::new(1.0, 0.0);
+                    ],
+                ],
+                delay: 0,
+            },
+            ctx,
+        }
+    }
+    pub fn kraus_operators(mut self, kraus_operators: PhotonicKrausOperators) -> Self {
+        self.template.kraus_operators = kraus_operators;
+        self
+    }
+    pub fn delay(mut self, delay: u64) -> Self {
+        self.template.delay = delay;
+        self
+    }
+    pub fn spawn(self) -> SinglePortWorkerHandle {
+        SinglePortRunner::spawn(self.ctx, self.template)
+    }
+}
+
 impl NodeHandle for SinglePortWorkerHandle {
     type CustomControlEvent = SinglePortEvent;
     type NodeTemplate = SinglePortTemplate;
 
-    fn new(ctx: Arc<SimulationContext>, template: &Self::NodeTemplate, seq: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, worker_id: u16, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
         Self {
             ports,
             control,
-            seq,
+            worker_id,
             join_handle,
         }
     }
@@ -186,7 +226,7 @@ impl NodeHandle for SinglePortWorkerHandle {
 impl SinglePortWorkerHandle {
     // Human facing API (can be slow). ctx is cloned for now
     fn set_kraus_operators(&self, ctx: Arc<SimulationContext>, kraus_operators: PhotonicKrausOperators, time: Time) {
-        ctx.operator_record.single.set(self.seq, kraus_operators, time);
+        ctx.operator_record.single.set(self.worker_id, kraus_operators, time);
     }
     fn set_delay(&self, delay: u64, time: Time) {
         self.schedule_node_control_event(SinglePortEvent::SetDelay(delay), time);
