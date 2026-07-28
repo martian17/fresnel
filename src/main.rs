@@ -26,7 +26,7 @@ fn monitor_throughput(ctx: SimulationContext){
     // simulation speed as % of real time (simulated ps advanced per wall-clock s)
     std::thread::spawn(move || {
         use std::sync::atomic::Ordering;
-        let mut total_packets: u64 = 0;
+        let mut total_historical_packets: u64 = 0;
         let mut prev_sim_time: u64 = 0;
         let start = std::time::Instant::now();
         for elapsed in 1u64.. {
@@ -42,12 +42,34 @@ fn monitor_throughput(ctx: SimulationContext){
             let avg_realtime_pct = sim_time as f64 / start.elapsed().as_secs_f64() / 1.0e12 * 100.0;
             prev_sim_time = sim_time;
             let sim_time_seconds = sim_time as f64 / 1.0e12;
-            total_packets += ctx.telemetry.spd.iter().map(|(i, metrics)| {
+            let spd_count = ctx.telemetry.spd.count();
+
+
+            // total packet telemetry
+            let total_packets: u64 = ctx.telemetry.single.iter().map(|(i, metrics)| {
+                metrics.packet_consumed.load(Ordering::Relaxed)
+            }).sum::<u64>() + 
+            ctx.telemetry.dual.iter().map(|(i, metrics)| {
+                metrics.base.packet_consumed.load(Ordering::Relaxed)
+            }).sum::<u64>() + 
+            ctx.telemetry.spd.iter().map(|(i, metrics)| {
                 metrics.base.packet_consumed.load(Ordering::Relaxed)
             }).sum::<u64>();
-            let spd_count = ctx.telemetry.spd.count();
+
+            total_historical_packets += total_packets;
+
+            // reset it before the next round
+            for (i, record) in ctx.telemetry.single.iter(){
+                record.packet_consumed.store(0, Ordering::Relaxed);
+            }
+            for (i, record) in ctx.telemetry.dual.iter(){
+                record.base.packet_consumed.store(0, Ordering::Relaxed);
+            }
+            for (i, record) in ctx.telemetry.spd.iter(){
+                record.base.packet_consumed.store(0, Ordering::Relaxed);
+            }
             println!(
-                "[{elapsed:>4}s] SPD1-{spd_count}: {spd_packet_counts} pkt/s | {time_dialation:>6.2}% of real time (avg {avg_realtime_pct:.2}%) | total: {total_packets} pkts, {sim_time_seconds:.3} sim-s",
+                "[{elapsed:>4}s] All: {total_packets} pkt/s | SPD1-{spd_count}: {spd_packet_counts} pkt/s | {time_dialation:>6.2}% of real time (avg {avg_realtime_pct:.2}%) | total: {total_historical_packets} pkts, {sim_time_seconds:.3} sim-s",
             );
         }
     });
@@ -136,7 +158,78 @@ fn entanglement_swap(){
     epps_2.join();
 }
 
+
+fn hom_experiment(odl_arm_1_m: f64, odl_arm_2_m: f64) {
+    let ctx = SimulationContext::new();
+    let epps = ctx.epps().spawn();
+
+    // free-space ODL: arm length -> propagation delay at vacuum c
+    let odl_1 = ctx.single().delay(
+        (odl_arm_1_m / 299_792_458.0 * 1.0e12).round() as u64
+    ).spawn();
+    let odl_2 = ctx.single().delay(
+        (odl_arm_2_m / 299_792_458.0 * 1.0e12).round() as u64
+    ).spawn();
+
+    let bs = ctx.dual().spawn();
+    let spd_1 = ctx.spd().id(1).spawn();
+    let spd_2 = ctx.spd().id(2).spawn();
+    
+    epps.exit_port(0).connect(odl_1.entry_port(0));
+    odl_1.exit_port(0).connect(bs.entry_port(0));
+    epps.exit_port(1).connect(odl_2.entry_port(0));
+    odl_2.exit_port(0).connect(bs.entry_port(1));
+    bs.exit_port(0).connect(spd_1.entry_port(0));
+    bs.exit_port(1).connect(spd_2.entry_port(0));
+
+    std::fs::create_dir_all("data").unwrap();
+    let parquet_writer = ParquetWorker::spawn("data".into(), "hom_experiment".to_string());
+    spd_1.connect_time_tagger(parquet_writer.add_channel(spd_1.spd_id));
+    spd_2.connect_time_tagger(parquet_writer.add_channel(spd_2.spd_id));
+    parquet_writer.start();
+
+    monitor_throughput(ctx.clone());
+
+    // SIGINT: flush and close the current parquet file (footer included),
+    // then exit — the sim threads run forever and are reaped by process exit
+    let mut parquet_writer = Some(parquet_writer);
+    ctrlc::set_handler(move || {
+        if let Some(writer) = parquet_writer.take() {
+            eprintln!("SIGINT: closing parquet file...");
+            writer.stop();
+            std::process::exit(0);
+        }
+    }).unwrap();
+
+    spd_1.start();
+    spd_2.start();
+    bs.start();
+    odl_1.start();
+    odl_2.start();
+    epps.start();
+
+    spd_1.join();
+    spd_2.join();
+    bs.join();
+    odl_1.join();
+    odl_2.join();
+    epps.join();
+}
+
+
+fn arm_arg(flag: &str) -> f64 {
+    std::env::args()
+        .find_map(|arg| arg.strip_prefix(flag).map(str::to_owned))
+        .map(|v| v.parse().unwrap_or_else(|_| panic!("{flag} expects a number (cm)")))
+        .unwrap_or(0.0)
+}
+
 fn main() {
-    entanglement_swap();
+    let arm_1_cm = arm_arg("--arm1=");
+    let arm_2_cm = arm_arg("--arm2=");
+    println!("ODL arm lengths: {arm_1_cm} cm / {arm_2_cm} cm");
+    hom_experiment(arm_1_cm / 100.0, arm_2_cm / 100.0);
+
+    // entanglement_swap();
     // simple_epps_2spd();
 }

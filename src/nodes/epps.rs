@@ -324,7 +324,7 @@ pub struct EPPSBuilder<'a> {
 impl<'a> EPPSBuilder<'a> {
     pub fn new(ctx: &'a SimulationContext) -> Self {
         let default_wave_profile = WaveProfile{
-            time_sigma: 150,
+            time_sigma: 75,
             wavelength: 1550.0,
             // TODO: Find a typical wavelength $\sigma$
             wavelength_sigma: 1.0,

@@ -64,6 +64,11 @@ impl NodeWorker for SinglePortWorker {
     fn new(ctx: SimulationContext, template: &Self::NodeTemplate) -> Self {
         // register operator, telemetry, etc.
         let worker_id = ctx.operator_record.single.add(template.kraus_operators.clone());
+        ctx.telemetry.single.push(crossbeam_utils::CachePadded::new(crate::concurrency::context::BaseMetrics{
+            packet_consumed: 0.into(),
+            packet_generated: 0.into(),
+            sim_time: 0.into(),
+        }));
         Self {
             sink: None,
             delay: template.delay,
@@ -90,6 +95,8 @@ impl NodeWorker for SinglePortWorker {
         let port = &mut ctx.runner.rx_ports[0];
         let batch_policy = &ctx.global.config.load().batch;
         let mut batch = port.get_batch(batch_policy.get_constraint(port.current_time));
+        ctx.global.telemetry.single[self.worker_id.into()].packet_consumed.fetch_add(batch.batch.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        ctx.global.telemetry.single[self.worker_id.into()].sim_time.store(batch.end_time, std::sync::atomic::Ordering::Relaxed);
 
         let mut slice = ctx.global.interaction_store.get_states(vec![&mut batch.batch]);
         let mut sink_batch: Vec<WavePacket> = Vec::new();

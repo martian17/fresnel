@@ -61,6 +61,19 @@ impl NodeWorker for DualPortWorker {
 
     fn new(ctx: SimulationContext, template: &Self::NodeTemplate) -> Self {
         let worker_id = ctx.operator_record.dual.add(template.scattering_matrix);
+        // TODO: Partially utilized. Implement bitflag and full recording
+        ctx.telemetry.dual.push(crossbeam_utils::CachePadded::new(crate::concurrency::context::DualMetrics{
+            base: crate::concurrency::context::BaseMetrics{
+                packet_consumed: 0.into(),
+                packet_generated: 0.into(),
+                sim_time: 0.into(),
+            },
+            merged_states: 0.into(),
+            multi_packet_event: 0.into(),
+            pair_count: 0.into(),
+            paired_packets: 0.into(),
+            single_packets: 0.into(),
+        }));
         Self {
             sink_left: None,
             sink_right: None,
@@ -103,7 +116,7 @@ impl NodeWorker for DualPortWorker {
         let mut left_batch = left_port.get_batch(batch_constraint.clone());
         let mut right_batch = right_port.get_batch(batch_constraint.clone());
         let start_time = left_batch.start_time.min(right_batch.start_time);
-        let end_time = left_batch.end_time.min(right_batch.end_time);
+        let mut end_time = left_batch.end_time.min(right_batch.end_time);
 
         // Temporal boundary condition. We don't want any packet clusters (island of interaction)
         // cross batch boundary
@@ -112,10 +125,18 @@ impl NodeWorker for DualPortWorker {
         loop {
             let left_edge = left_batch.trailing_edge();
             while let Some(wp) = right_port.get_overlapping_or_before(left_edge) {
+                if wp.time > end_time {
+                    // TODO: Consider using leading edge for the time. Also need to update EPPS if
+                    // we do.
+                    end_time = wp.time;
+                }
                 right_batch.push(wp);
             }
             let right_edge = right_batch.trailing_edge();
             while let Some(wp) = left_port.get_overlapping_or_before(right_edge) {
+                if wp.time > end_time {
+                    end_time = wp.time;
+                }
                 left_batch.push(wp);
             }
             if right_port.is_strictly_after(left_batch.trailing_edge()) {
@@ -123,6 +144,10 @@ impl NodeWorker for DualPortWorker {
             }
         }
         let mut slice = ctx.global.interaction_store.get_states(vec![&mut left_batch.batch, &mut right_batch.batch]);
+
+        ctx.global.telemetry.dual[self.worker_id.into()].base.packet_consumed.fetch_add((left_batch.len() + right_batch.len()) as u64, std::sync::atomic::Ordering::Relaxed);
+        ctx.global.telemetry.dual[self.worker_id.into()].base.sim_time.store(end_time, std::sync::atomic::Ordering::Relaxed);
+
 
         // first pass: merge all the states
         {

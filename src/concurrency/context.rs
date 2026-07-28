@@ -101,7 +101,7 @@ pub struct SPDMetrics {
 }
 
 
-pub struct DoubleMetrics {
+pub struct DualMetrics {
     pub base: BaseMetrics,
     pub merged_states: AtomicU64,
     pub paired_packets: AtomicU64,
@@ -113,7 +113,7 @@ pub struct DoubleMetrics {
 pub struct TelemetryRecord {
     pub epps: boxcar::Vec<CachePadded<BaseMetrics>>,
     pub single: boxcar::Vec<CachePadded<BaseMetrics>>,
-    pub double: boxcar::Vec<CachePadded<DoubleMetrics>>,
+    pub dual: boxcar::Vec<CachePadded<DualMetrics>>,
     pub spd: boxcar::Vec<CachePadded<SPDMetrics>>,
 }
 
@@ -139,7 +139,7 @@ impl SimulationContext {
             telemetry: Arc::new(TelemetryRecord {
                 epps: boxcar::Vec::new(),
                 single: boxcar::Vec::new(),
-                double: boxcar::Vec::new(),
+                dual: boxcar::Vec::new(),
                 spd: boxcar::Vec::new(),
             })
         }
