@@ -61,12 +61,8 @@ pub struct SPDWorker {
     // tagger_channel: Option<SyncSender<Vec<Time>>>,
     claimer_channel: Option<SyncSender<WpBatch>>,
     claimer_thread_handle: Option<thread::JoinHandle<()>>,
+    worker_id: u16,
     spd_id: u16,
-    // wall-clock throughput instrumentation; read by the monitor thread in main
-    packet_counter: Arc<std::sync::atomic::AtomicU64>,
-    // latest simulated time (ps) seen by this SPD; lets the monitor compute
-    // simulation speed as a fraction of real time
-    sim_time_ps: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Drop for SPDWorker {
@@ -83,7 +79,16 @@ impl NodeWorker for SPDWorker {
     type NodeTemplate = SPDTemplate;
     type NodeHandle = SPDWorkerHandle;
 
-    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate) -> Self {
+        let worker_id = ctx.telemetry.spd.push(crossbeam_utils::CachePadded::new(crate::concurrency::context::SPDMetrics{
+            base: crate::concurrency::context::BaseMetrics{
+                packet_consumed: 0.into(),
+                packet_generated: 0.into(),
+                sim_time: 0.into(),
+            },
+            clicks: 0.into(),
+            dark_counts: 0.into(),
+        })) as u16;
         let (tx, rx) = sync_channel::<WpBatch>(1);
         let (tx_settagger, rx_settagger) = channel::<SyncSender<TimeTagBatch>>();
         Self {
@@ -114,15 +119,12 @@ impl NodeWorker for SPDWorker {
                     }
                 }
             })),
+            worker_id,
             spd_id: template.spd_id,
-            packet_counter: template.packet_counter.clone(),
-            sim_time_ps: template.sim_time_ps.clone(),
         }
     }
-    fn register_operator(ctx: &SimulationContext, template: &Self::NodeTemplate) -> OpStoreHandle {
-        // NOTE: SPD doesn't (shouldn't) register any operators
-        // So we return a dummy value to conform to the trait shape
-        0
+    fn id(&self) -> u16 {
+        self.worker_id
     }
     fn handle_connection(&mut self, ctx: RunnerContext<Self>, exit_port_id: PortId, tx_port: TxPort) {
         panic!("SPD does not have any exit port. Use .connect_time_tagger()");
@@ -138,8 +140,8 @@ impl NodeWorker for SPDWorker {
         let port = &mut ctx.runner.rx_ports[0];
         let batch_policy = &ctx.global.config.load().batch;
         let mut batch = port.get_batch(batch_policy.get_constraint(port.current_time));
-        self.packet_counter.fetch_add(batch.batch.len() as u64, std::sync::atomic::Ordering::Relaxed);
-        self.sim_time_ps.store(batch.end_time, std::sync::atomic::Ordering::Relaxed);
+        ctx.global.telemetry.spd[self.worker_id.into()].base.packet_consumed.fetch_add(batch.batch.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        ctx.global.telemetry.spd[self.worker_id.into()].base.sim_time.store(batch.end_time, std::sync::atomic::Ordering::Relaxed);
 
         let mut slice = ctx.global.interaction_store.get_states(vec![&mut batch.batch]);
 
@@ -208,13 +210,12 @@ pub struct SPDWorkerHandle {
     pub ports: Vec<TxPort>,
     pub control: Sender<TimedControlEvent<SPDEvent>>,
     pub join_handle: std::thread::JoinHandle<()>,
+    pub worker_id: u16,
     pub spd_id: u16,
 }
 
 pub struct SPDTemplate {
     pub spd_id: u16,
-    pub packet_counter: Arc<std::sync::atomic::AtomicU64>,
-    pub sim_time_ps: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl NodeTemplate for SPDTemplate {
@@ -227,11 +228,12 @@ impl NodeHandle for SPDWorkerHandle {
     type CustomControlEvent = SPDEvent;
     type NodeTemplate = SPDTemplate;
 
-    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, seq: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, worker_id: u16, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
         Self {
             ports,
             control,
             join_handle,
+            worker_id,
             spd_id: template.spd_id,
         }
     }

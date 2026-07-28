@@ -26,7 +26,6 @@ use crate::concurrency::interaction_store::{
 };
 use crate::concurrency::context::{
     SimulationContext,
-    OpStoreHandle,
 };
 use crate::concurrency::snowflake;
 
@@ -54,7 +53,7 @@ pub struct SinglePortWorker {
     // which is still not out of the realm of possibility, especially with satellite based
     // communication, so we still use u64 here
     delay: u64,
-    seq: OpStoreHandle,
+    worker_id: u16,
 }
 
 impl NodeWorker for SinglePortWorker {
@@ -62,15 +61,17 @@ impl NodeWorker for SinglePortWorker {
     type NodeTemplate = SinglePortTemplate;
     type NodeHandle = SinglePortWorkerHandle;
 
-    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self {
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate) -> Self {
+        // register operator, telemetry, etc.
+        let worker_id = ctx.operator_record.single.add(template.kraus_operators.clone());
         Self {
             sink: None,
             delay: template.delay,
-            seq,
+            worker_id,
         }
     }
-    fn register_operator(ctx: &SimulationContext, template: &Self::NodeTemplate) -> OpStoreHandle {
-        ctx.operator_record.single.add(template.kraus_operators.clone())
+    fn id(&self) -> u16 {
+        self.worker_id
     }
     fn handle_connection(&mut self, ctx: RunnerContext<Self>, exit_port_id: PortId, tx_port: TxPort) {
         if exit_port_id != 0 {
@@ -111,7 +112,7 @@ impl NodeWorker for SinglePortWorker {
             let source_mode = state.extract_wavepacket(&wp_source);
             let sink_mode = state.register_wavepacket(&wp_sink);
             state.operators.push(Operator::Single{
-                store_handle: self.seq,
+                store_handle: self.worker_id,
                 time: wp_source.time,
                 // these are placeholders. It will be replaced later using set_sink
                 source_modes: [source_mode],
@@ -151,7 +152,7 @@ impl NodeWorker for SinglePortWorker {
 pub struct SinglePortWorkerHandle {
     pub ports: Vec<TxPort>,
     pub control: Sender<TimedControlEvent<SinglePortEvent>>,
-    pub seq: OpStoreHandle,// index in the operator store
+    pub worker_id: u16,// index in the operator store
     pub join_handle: std::thread::JoinHandle<()>,
 }
 
@@ -171,11 +172,11 @@ impl NodeHandle for SinglePortWorkerHandle {
     type CustomControlEvent = SinglePortEvent;
     type NodeTemplate = SinglePortTemplate;
 
-    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, seq: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, worker_id: u16, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
         Self {
             ports,
             control,
-            seq,
+            worker_id,
             join_handle,
         }
     }
@@ -193,7 +194,7 @@ impl NodeHandle for SinglePortWorkerHandle {
 impl SinglePortWorkerHandle {
     // Human facing API (can be slow). ctx is cloned for now
     fn set_kraus_operators(&self, ctx: Arc<SimulationContext>, kraus_operators: PhotonicKrausOperators, time: Time) {
-        ctx.operator_record.single.set(self.seq, kraus_operators, time);
+        ctx.operator_record.single.set(self.worker_id, kraus_operators, time);
     }
     fn set_delay(&self, delay: u64, time: Time) {
         self.schedule_node_control_event(SinglePortEvent::SetDelay(delay), time);

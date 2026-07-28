@@ -325,7 +325,7 @@ pub trait NodeHandle: Sized {
 
     // user needs to implement this
     // new should register a new operator store
-    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, seq: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control_channel: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self;
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, worker_id: u16, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control_channel: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self;
     fn get_tx_ports(&self) -> &Vec<TxPort>;
     fn get_control_channel(&self) -> &Sender<TimedControlEvent<Self::CustomControlEvent>>;
     fn join(self);
@@ -400,11 +400,11 @@ pub trait NodeWorker: Send + Sized {
     type NodeTemplate: NodeTemplate;
     type NodeHandle: NodeHandle<CustomControlEvent = Self::CustomControlEvent, NodeTemplate = Self::NodeTemplate>;
 
-    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, seq: OpStoreHandle) -> Self;
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate) -> Self;
     fn handle_connection(&mut self, ctx: RunnerContext<Self>, exit_port_id: PortId, tx_port: TxPort);
     fn handle_custom_event(&mut self, ctx: RunnerContext<Self>, custom_event: Self::CustomControlEvent);
     fn process_batch(&mut self, ctx: RunnerContext<Self>);
-    fn register_operator(ctx: &SimulationContext, template: &Self::NodeTemplate) -> OpStoreHandle;
+    fn id(&self) -> u16;
 }
 
 
@@ -416,7 +416,6 @@ pub struct RunnerContext<'a, T: NodeWorker>{
 
 impl<T: NodeWorker + 'static> NodeRunner<T> {
     pub fn spawn(ctx: &SimulationContext, template: T::NodeTemplate) -> T::NodeHandle {
-        let id = T::register_operator(&ctx, &template);
         let (tx_ports, rx_ports): (Vec<_>, Vec<_>) = (0..template.rx_port_count()).map(|_| {
             let (tx_raw, rx_raw) = sync_channel::<WpBatch>(3);
             let tx = TxPort {
@@ -434,6 +433,8 @@ impl<T: NodeWorker + 'static> NodeRunner<T> {
             (tx, rx)
         }).unzip();
         let (control_tx, control_rx) = channel::<TimedControlEvent<T::CustomControlEvent>>();
+        let worker = T::new(ctx.clone(), &template);
+        let worker_id = worker.id();
 
         let mut runner = Self {
             state: RunnerState{
@@ -442,13 +443,13 @@ impl<T: NodeWorker + 'static> NodeRunner<T> {
                 control_event_queue: BinaryHeap::new(),
                 time: 0,
             },
-            worker: T::new(ctx.clone(), &template, id),
+            worker,
         };
         let ctx_clone = ctx.clone();
         let handle = thread::spawn(move || {
             runner.run(ctx_clone);
         });
-        T::NodeHandle::new(ctx.clone(), &template, id, handle, tx_ports, control_tx)
+        T::NodeHandle::new(ctx.clone(), &template, worker_id, handle, tx_ports, control_tx)
     }
     fn preload_control_events(&mut self){
         loop {

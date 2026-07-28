@@ -90,21 +90,13 @@ fn simple_epps_2spd() {
         density_matrix: outer_product(vector![Complex::ZERO, Complex::ONE, Complex::ONE, Complex::ZERO]),
         success_probability: 0.01,// 1% success rate results in 1.0E7 generations per second
     });
-    let spd_1_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let spd_2_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let spd_1_sim_time = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let spd_2_sim_time = Arc::new(std::sync::atomic::AtomicU64::new(0));
     // NOTE: in moonshot projects we seem to be using id 0 for special purposes,
     // so starting the ID from 1
     let spd_1 = SPDRunner::spawn(&ctx, SPDTemplate {
         spd_id: 1,
-        packet_counter: spd_1_counter.clone(),
-        sim_time_ps: spd_1_sim_time.clone(),
     });
     let spd_2 = SPDRunner::spawn(&ctx, SPDTemplate {
         spd_id: 2,
-        packet_counter: spd_2_counter.clone(),
-        sim_time_ps: spd_2_sim_time.clone(),
     });
 
     // throughput monitor: prints wall-clock packets/second per SPD and the
@@ -116,13 +108,13 @@ fn simple_epps_2spd() {
         let start = std::time::Instant::now();
         for elapsed in 1u64.. {
             std::thread::sleep(std::time::Duration::from_secs(1));
-            let c1 = spd_1_counter.swap(0, Ordering::Relaxed);
-            let c2 = spd_2_counter.swap(0, Ordering::Relaxed);
+            let c1 = ctx.telemetry.spd[spd_1.worker_id.into()].base.packet_consumed.swap(0, Ordering::Relaxed);
+            let c2 = ctx.telemetry.spd[spd_2.worker_id.into()].base.packet_consumed.swap(0, Ordering::Relaxed);
             total += c1 + c2;
             // overall progress is set by the laggard detector
-            let sim_ps = spd_1_sim_time
-                .load(Ordering::Relaxed)
-                .min(spd_2_sim_time.load(Ordering::Relaxed));
+            let sim_ps = ctx.telemetry.spd[spd_1.worker_id.into()].base.sim_time.load(Ordering::Relaxed).min(
+                ctx.telemetry.spd[spd_2.worker_id.into()].base.sim_time.load(Ordering::Relaxed)
+            );
             let realtime_pct =
                 (sim_ps - prev_sim_ps) as f64 / 1.0e12 * 100.0;
             let avg_realtime_pct =
@@ -193,63 +185,44 @@ fn entanglement_swap(){
     });
     // NOTE: in moonshot projects we seem to be using id 0 for special purposes,
     // so starting the ID from 1
-    let spd_1_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let spd_2_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let spd_3_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let spd_4_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let spd_1_sim_time = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let spd_2_sim_time = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let spd_3_sim_time = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let spd_4_sim_time = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let spd_1 = SPDRunner::spawn(&ctx, SPDTemplate {
         spd_id: 1,
-        packet_counter: spd_1_counter.clone(),
-        sim_time_ps: spd_1_sim_time.clone(),
     });
     let spd_2 = SPDRunner::spawn(&ctx, SPDTemplate {
         spd_id: 2,
-        packet_counter: spd_2_counter.clone(),
-        sim_time_ps: spd_2_sim_time.clone(),
     });
     let spd_3 = SPDRunner::spawn(&ctx, SPDTemplate {
         spd_id: 3,
-        packet_counter: spd_3_counter.clone(),
-        sim_time_ps: spd_3_sim_time.clone(),
     });
     let spd_4 = SPDRunner::spawn(&ctx, SPDTemplate {
         spd_id: 4,
-        packet_counter: spd_4_counter.clone(),
-        sim_time_ps: spd_4_sim_time.clone(),
     });
 
     // throughput monitor: prints wall-clock packets/second per SPD and the
     // simulation speed as % of real time (simulated ps advanced per wall-clock s)
     std::thread::spawn(move || {
         use std::sync::atomic::Ordering;
-        let counters = [spd_1_counter, spd_2_counter, spd_3_counter, spd_4_counter];
-        let sim_times = [spd_1_sim_time, spd_2_sim_time, spd_3_sim_time, spd_4_sim_time];
-        let mut total: u64 = 0;
-        let mut prev_sim_ps: u64 = 0;
+        let mut total_packets: u64 = 0;
+        let mut prev_sim_time: u64 = 0;
         let start = std::time::Instant::now();
         for elapsed in 1u64.. {
             std::thread::sleep(std::time::Duration::from_secs(1));
-            let c: Vec<u64> = counters.iter().map(|c| c.swap(0, Ordering::Relaxed)).collect();
-            total += c.iter().sum::<u64>();
-            // overall progress is set by the laggard detector
-            let sim_ps = sim_times
-                .iter()
-                .map(|t| t.load(Ordering::Relaxed))
-                .min()
-                .unwrap();
-            let realtime_pct =
-                (sim_ps - prev_sim_ps) as f64 / 1.0e12 * 100.0;
-            let avg_realtime_pct =
-                sim_ps as f64 / start.elapsed().as_secs_f64() / 1.0e12 * 100.0;
-            prev_sim_ps = sim_ps;
+            // SPD telemetry
+            let spd_packet_counts = ctx.telemetry.spd.iter().map(|(i, metrics)| {
+                format!("{:>8}", metrics.base.packet_consumed.load(Ordering::Relaxed))
+            }).collect::<Vec<_>>().join(" ");
+            let sim_time = ctx.telemetry.spd.iter().map(|(i, metrics)| {
+                metrics.base.sim_time.load(Ordering::Relaxed)
+            }).min().unwrap();
+            let time_dialation = (sim_time - prev_sim_time) as f64 / 1.0e12 * 100.0;
+            let avg_realtime_pct = sim_time as f64 / start.elapsed().as_secs_f64() / 1.0e12 * 100.0;
+            prev_sim_time = sim_time;
+            let sim_time_seconds = sim_time as f64 / 1.0e12;
+            total_packets += ctx.telemetry.spd.iter().map(|(i, metrics)| {
+                metrics.base.packet_consumed.load(Ordering::Relaxed)
+            }).sum::<u64>();
             println!(
-                "[{elapsed:>4}s] SPD1-4: {:>8} {:>8} {:>8} {:>8} pkt/s | {realtime_pct:>6.2}% of real time (avg {avg_realtime_pct:.2}%) | total: {total} pkts, {:.3} sim-s",
-                c[0], c[1], c[2], c[3],
-                sim_ps as f64 / 1.0e12,
+                "[{elapsed:>4}s] SPD1-4: {spd_packet_counts} pkt/s | {time_dialation:>6.2}% of real time (avg {avg_realtime_pct:.2}%) | total: {total_packets} pkts, {sim_time_seconds:.3} sim-s",
             );
         }
     });
@@ -289,158 +262,3 @@ fn main() {
     entanglement_swap();
     // simple_epps_2spd();
 }
-
-
-// #![allow(unused_imports)]
-// mod nodes;
-// mod concurrency;
-// mod types;
-// mod util;
-// mod collapser;
-// 
-// use std::sync::{Arc};
-// use arc_swap::ArcSwap;
-// use nalgebra::{
-//     SMatrix,
-//     SVector,
-//     matrix,
-//     vector,
-//     Complex,
-//     ComplexField,
-// };
-// use crate::concurrency::context::{
-//     SimulationContext,
-//     SimulationConfig,
-//     OperatorRecord,
-// };
-// use crate::types::core::{
-//     Time,
-//     BatchPolicy,
-// };
-// use crate::concurrency::interaction_store::{
-//     InteractionStore
-// };
-// 
-// use crate::nodes::epps::{
-//     EPPSRunner,
-//     EPPSTemplate,
-//     WaveProfile,
-// };
-// use crate::nodes::single_port::{
-//     SinglePortRunner,
-//     SinglePortTemplate,
-// };
-// use crate::nodes::dual_port::{
-//     DualPortRunner,
-//     DualPortTemplate,
-// };
-// use crate::nodes::spd::{
-//     SPDRunner,
-//     SPDTemplate,
-// };
-// use crate::nodes::core::{
-//     NodeHandle,
-// };
-// 
-// 
-// 
-// // TODO: multi threaded store to get the operators (Original density matrix from EPPS, Kraus and S-Matrix)
-// // store.get(NodeId).
-// // loop through the past changes in the operators, find the latest one
-// // no garbage collection implemented, meaning operator changes will be stored indefinitely
-// // we should look into having them implemented based on the global clock (best effort latest item
-// // count up)
-// 
-// 
-// pub fn outer_product<T, const D: usize>(v: SVector<T, D>) -> SMatrix<T, D, D>
-// where
-//     T: ComplexField,
-// {
-//     &v * v.adjoint()
-// }
-// 
-// fn simple_epps_2spd() {
-//     // TODO: Make a more human friendly context initialization interface
-//     let context = Arc::new(SimulationContext {
-//         interaction_store: Arc::new(InteractionStore::new()),
-//         config: ArcSwap::from_pointee(SimulationConfig {
-//             batch: BatchPolicy{
-//                 period: 20_000_000,
-//                 max_size: 200,
-//             }}),
-//         operator_record: OperatorRecord::new(),
-//     });
-//     let epps = EPPSRunner::spawn(context.clone(), 0, EPPSTemplate{
-//         signal_profile: WaveProfile{
-//             time_sigma: 150,
-//             wavelength: 1550.0,
-//             // TODO: Find a typical wavelength $\sigma$
-//             wavelength_sigma: 1.0,
-//         },
-//         idler_profile: WaveProfile{
-//             time_sigma: 150,
-//             wavelength: 1550.0,
-//             wavelength_sigma: 1.0,
-//         },
-//         pump_frequency: 1.0E+9,
-//         density_matrix: outer_product(vector![Complex::ZERO, Complex::ONE, Complex::ONE, Complex::ZERO]),
-//         success_probability: 0.01,// 1% success rate results in 1.0E7 generations per second
-//     });
-//     // NOTE: in moonshot projects we seem to be using id 0 for special purposes,
-//     // so starting the ID from 1
-//     let spd_1_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
-//     let spd_2_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
-//     let spd_1_sim_time = Arc::new(std::sync::atomic::AtomicU64::new(0));
-//     let spd_2_sim_time = Arc::new(std::sync::atomic::AtomicU64::new(0));
-//     let spd_1 = SPDRunner::spawn(context.clone(), 1, SPDTemplate {
-//         spd_id: 1,
-//         packet_counter: spd_1_counter.clone(),
-//         sim_time_ps: spd_1_sim_time.clone(),
-//     });
-//     let spd_2 = SPDRunner::spawn(context.clone(), 1, SPDTemplate {
-//         spd_id: 2,
-//         packet_counter: spd_2_counter.clone(),
-//         sim_time_ps: spd_2_sim_time.clone(),
-//     });
-// 
-//     // throughput monitor: prints wall-clock packets/second per SPD and the
-//     // simulation speed as % of real time (simulated ps advanced per wall-clock s)
-//     std::thread::spawn(move || {
-//         use std::sync::atomic::Ordering;
-//         let mut total: u64 = 0;
-//         let mut prev_sim_ps: u64 = 0;
-//         let start = std::time::Instant::now();
-//         for elapsed in 1u64.. {
-//             std::thread::sleep(std::time::Duration::from_secs(1));
-//             let c1 = spd_1_counter.swap(0, Ordering::Relaxed);
-//             let c2 = spd_2_counter.swap(0, Ordering::Relaxed);
-//             total += c1 + c2;
-//             // overall progress is set by the laggard detector
-//             let sim_ps = spd_1_sim_time
-//                 .load(Ordering::Relaxed)
-//                 .min(spd_2_sim_time.load(Ordering::Relaxed));
-//             let realtime_pct =
-//                 (sim_ps - prev_sim_ps) as f64 / 1.0e12 * 100.0;
-//             let avg_realtime_pct =
-//                 sim_ps as f64 / start.elapsed().as_secs_f64() / 1.0e12 * 100.0;
-//             prev_sim_ps = sim_ps;
-//             println!(
-//                 "[{elapsed:>4}s] SPD1: {c1:>9} pkt/s | SPD2: {c2:>9} pkt/s | {realtime_pct:>6.2}% of real time (avg {avg_realtime_pct:.2}%) | total: {total} pkts, {:.3} sim-s",
-//                 sim_ps as f64 / 1.0e12,
-//             );
-//         }
-//     });
-//     epps.exit_port(0).connect(spd_1.entry_port(0));
-//     epps.exit_port(1).connect(spd_2.entry_port(0));
-//     spd_1.start();
-//     spd_2.start();
-//     epps.start();
-// 
-//     epps.join();
-//     spd_1.join();
-//     spd_2.join();
-// }
-// 
-// fn main() {
-//     simple_epps_2spd();
-// }
