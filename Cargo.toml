@@ -17,6 +17,7 @@ arc-swap = { version = "1.9.2" }
 boxcar = { version = "0.2.14" }
 rayon = { version = "1.12.0" }
 crossbeam-utils = { version = "0.8.22" }
+ctrlc = { version = "3.5.2" }
 
 [features]
 default = ["FSDM"]

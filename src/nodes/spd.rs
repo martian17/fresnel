@@ -111,11 +111,18 @@ impl NodeWorker for SPDWorker {
                     if let Some(tagger_channel) = &tagger_channel {
                         // sent even when no tag survived collapse: the batch's end_time
                         // still advances this channel's frontier in the merger
-                        tagger_channel.send(TimeTagBatch{
+                        let tagger_result = tagger_channel.send(TimeTagBatch{
                             start_time: batch.start_time,
                             end_time: batch.end_time,
                             batch: result,
-                        }).unwrap();
+                        });
+                        // TODO: Handle stop properly
+                        if tagger_result.is_err() {
+                            println!("SPD: target closed");
+                            // pause this thread
+                            thread::sleep(std::time::Duration::from_millis(10000));
+                            return;
+                        };
                     }
                 }
             })),

@@ -109,6 +109,15 @@ fn entanglement_swap(){
 
     monitor_throughput(ctx.clone());
 
+    let mut parquet_writer = Some(parquet_writer);
+    ctrlc::set_handler(move || {
+        if let Some(writer) = parquet_writer.take() {
+            eprintln!("SIGINT: closing parquet file...");
+            writer.stop();
+            std::process::exit(0);
+        }
+    }).unwrap();
+
     // TODO: ctx.start_all() and ctx.join_all()
     spd_1.start();
     spd_2.start();
