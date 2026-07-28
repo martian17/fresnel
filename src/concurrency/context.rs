@@ -21,6 +21,18 @@ use crate::types::physics::PhotonicKrausOperators;
 pub struct SimulationConfig{
     pub batch: BatchPolicy,
 }
+use crate::nodes::epps::{
+    EPPSBuilder,
+};
+use crate::nodes::single_port::{
+    SinglePortBuilder,
+};
+use crate::nodes::dual_port::{
+    DualPortBuilder,
+};
+use crate::nodes::spd::{
+    SPDBuilder,
+};
 
 
 
@@ -140,6 +152,18 @@ impl SimulationContext {
         updater(&mut config);
         self.config.store(Arc::new(config));
         self
+    }
+    pub fn epps(&self) -> EPPSBuilder {
+        EPPSBuilder::new(self)
+    }
+    pub fn single(&self) -> SinglePortBuilder {
+        SinglePortBuilder::new(self)
+    }
+    pub fn dual(&self) -> DualPortBuilder {
+        DualPortBuilder::new(self)
+    }
+    pub fn spd(&self) -> SPDBuilder {
+        SPDBuilder::new(self)
     }
 }
 

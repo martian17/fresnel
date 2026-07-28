@@ -4,8 +4,8 @@ use std::sync::{Mutex, Condvar, Arc};
 use std::thread;
 use std::collections::BinaryHeap;
 
-use nalgebra::{SMatrix, Complex};
-use smallvec::SmallVec;
+use nalgebra::{SMatrix, Complex, matrix};
+use smallvec::{SmallVec, smallvec};
 
 use crate::nodes::core::{
     WavePacket,
@@ -165,6 +165,40 @@ pub struct SinglePortTemplate {
 impl NodeTemplate for SinglePortTemplate {
     fn rx_port_count(&self) -> usize {
         1
+    }
+}
+
+pub struct SinglePortBuilder<'a> {
+    template: SinglePortTemplate,
+    ctx: &'a SimulationContext
+}
+
+impl<'a> SinglePortBuilder<'a> {
+    pub fn new(ctx: &'a SimulationContext) -> Self {
+        SinglePortBuilder {
+            template: SinglePortTemplate {
+                kraus_operators: smallvec![
+                    matrix![
+                        Complex::new(1.0, 0.0), Complex::new(0.0, 0.0), Complex::new(0.0, 0.0);
+                        Complex::new(0.0, 0.0), Complex::new(1.0, 0.0), Complex::new(0.0, 0.0);
+                        Complex::new(0.0, 0.0), Complex::new(0.0, 0.0), Complex::new(1.0, 0.0);
+                    ],
+                ],
+                delay: 0,
+            },
+            ctx,
+        }
+    }
+    pub fn kraus_operators(mut self, kraus_operators: PhotonicKrausOperators) -> Self {
+        self.template.kraus_operators = kraus_operators;
+        self
+    }
+    pub fn delay(mut self, delay: u64) -> Self {
+        self.template.delay = delay;
+        self
+    }
+    pub fn spawn(self) -> SinglePortWorkerHandle {
+        SinglePortRunner::spawn(self.ctx, self.template)
     }
 }
 

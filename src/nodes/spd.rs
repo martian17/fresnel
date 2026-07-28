@@ -224,6 +224,29 @@ impl NodeTemplate for SPDTemplate {
     }
 }
 
+pub struct SPDBuilder<'a> {
+    template: SPDTemplate,
+    ctx: &'a SimulationContext
+}
+
+impl<'a> SPDBuilder<'a> {
+    pub fn new(ctx: &'a SimulationContext) -> Self {
+        SPDBuilder {
+            template: SPDTemplate {
+                spd_id: 0,
+            },
+            ctx,
+        }
+    }
+    pub fn id(mut self, id: u16) -> Self {
+        self.template.spd_id = id;
+        self
+    }
+    pub fn spawn(self) -> SPDWorkerHandle {
+        SPDRunner::spawn(self.ctx, self.template)
+    }
+}
+
 impl NodeHandle for SPDWorkerHandle {
     type CustomControlEvent = SPDEvent;
     type NodeTemplate = SPDTemplate;

@@ -4,7 +4,7 @@ use std::sync::{Mutex, Condvar, Arc};
 use std::thread;
 use std::collections::BinaryHeap;
 
-use nalgebra::{SMatrix, Complex};
+use nalgebra::{SMatrix, Complex, matrix};
 use smallvec::SmallVec;
 
 use crate::nodes::core::{
@@ -281,6 +281,40 @@ pub struct DualPortTemplate {
 impl NodeTemplate for DualPortTemplate {
     fn rx_port_count(&self) -> usize {
         2
+    }
+}
+
+pub struct DualPortBuilder<'a> {
+    template: DualPortTemplate,
+    ctx: &'a SimulationContext
+}
+
+impl<'a> DualPortBuilder<'a> {
+    pub fn new(ctx: &'a SimulationContext) -> Self {
+        // symmetric 50:50 beamsplitter, polarization preserving.
+        // Mode basis: (left_H, left_V, right_H, right_V); the reflected path
+        // picks up the i phase (BS ⊗ I_pol)
+        let s = Complex::new(std::f32::consts::FRAC_1_SQRT_2, 0.0);
+        let i = Complex::new(0.0, std::f32::consts::FRAC_1_SQRT_2);
+        let z = Complex::new(0.0f32, 0.0);
+        DualPortBuilder {
+            template: DualPortTemplate {
+                scattering_matrix: matrix![
+                    s, z, i, z;
+                    z, s, z, i;
+                    i, z, s, z;
+                    z, i, z, s;
+                ],
+            },
+            ctx,
+        }
+    }
+    pub fn scattering_matrix(mut self, scattering_matrix: SMatrix<Complex<f32>, 4, 4>) -> Self {
+        self.template.scattering_matrix = scattering_matrix;
+        self
+    }
+    pub fn spawn(self) -> DualPortWorkerHandle {
+        DualPortRunner::spawn(self.ctx, self.template)
     }
 }
 

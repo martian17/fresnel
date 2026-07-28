@@ -5,6 +5,7 @@ mod types;
 mod util;
 mod collapser;
 mod parquet;
+mod quantum;
 
 use std::sync::{Arc};
 use arc_swap::ArcSwap;
@@ -61,43 +62,14 @@ use crate::parquet::core::ParquetWorker;
 // count up)
 
 
-pub fn outer_product<T, const D: usize>(v: SVector<T, D>) -> SMatrix<T, D, D>
-where
-    T: ComplexField,
-{
-    &v * v.adjoint()
-}
-
 fn simple_epps_2spd() {
-    // TODO: Make a more human friendly context initialization interface
     let ctx = SimulationContext::new().update_config(|config| {
         config.batch.period = 20_000_000;
         config.batch.max_size = 200;
     });
-    let epps = EPPSRunner::spawn(&ctx, EPPSTemplate{
-        signal_profile: WaveProfile{
-            time_sigma: 150,
-            wavelength: 1550.0,
-            // TODO: Find a typical wavelength $\sigma$
-            wavelength_sigma: 1.0,
-        },
-        idler_profile: WaveProfile{
-            time_sigma: 150,
-            wavelength: 1550.0,
-            wavelength_sigma: 1.0,
-        },
-        pump_frequency: 1.0E+9,
-        density_matrix: outer_product(vector![Complex::ZERO, Complex::ONE, Complex::ONE, Complex::ZERO]),
-        success_probability: 0.01,// 1% success rate results in 1.0E7 generations per second
-    });
-    // NOTE: in moonshot projects we seem to be using id 0 for special purposes,
-    // so starting the ID from 1
-    let spd_1 = SPDRunner::spawn(&ctx, SPDTemplate {
-        spd_id: 1,
-    });
-    let spd_2 = SPDRunner::spawn(&ctx, SPDTemplate {
-        spd_id: 2,
-    });
+    let epps = ctx.epps().spawn();
+    let spd_1 = ctx.spd().id(1).spawn();
+    let spd_2 = ctx.spd().id(2).spawn();
 
     // throughput monitor: prints wall-clock packets/second per SPD and the
     // simulation speed as % of real time (simulated ps advanced per wall-clock s)
@@ -139,64 +111,15 @@ fn simple_epps_2spd() {
 
 fn entanglement_swap(){
     let ctx = SimulationContext::new();
-    let epps_1 = EPPSRunner::spawn(&ctx, EPPSTemplate{
-        signal_profile: WaveProfile{
-            time_sigma: 150,
-            wavelength: 1550.0,
-            wavelength_sigma: 1.0,
-        },
-        idler_profile: WaveProfile{
-            time_sigma: 150,
-            wavelength: 1550.0,
-            wavelength_sigma: 1.0,
-        },
-        pump_frequency: 1.0E+9,
-        density_matrix: outer_product(vector![Complex::ZERO, Complex::ONE, Complex::ONE, Complex::ZERO]),
-        success_probability: 0.01,// 1% success rate results in 1.0E7 generations per second
-    });
-    let epps_2 = EPPSRunner::spawn(&ctx, EPPSTemplate{
-        signal_profile: WaveProfile{
-            time_sigma: 150,
-            wavelength: 1550.0,
-            wavelength_sigma: 1.0,
-        },
-        idler_profile: WaveProfile{
-            time_sigma: 150,
-            wavelength: 1550.0,
-            wavelength_sigma: 1.0,
-        },
-        pump_frequency: 1.0E+9,
-        density_matrix: outer_product(vector![Complex::ZERO, Complex::ONE, Complex::ONE, Complex::ZERO]),
-        success_probability: 0.01,// 1% success rate results in 1.0E7 generations per second
-    });
-    // symmetric 50:50 beamsplitter, polarization preserving.
-    // Mode basis: (left_H, left_V, right_H, right_V); the reflected path
-    // picks up the i phase (BS ⊗ I_pol)
-    let s = Complex::new(std::f32::consts::FRAC_1_SQRT_2, 0.0);
-    let i = Complex::new(0.0, std::f32::consts::FRAC_1_SQRT_2);
-    let z = Complex::new(0.0f32, 0.0);
-    let bs_center = DualPortRunner::spawn(&ctx, DualPortTemplate {
-        scattering_matrix: matrix![
-            s, z, i, z;
-            z, s, z, i;
-            i, z, s, z;
-            z, i, z, s;
-        ],
-    });
+    let epps_1 = ctx.epps().spawn();
+    let epps_2 = ctx.epps().spawn();
+    let bs_center = ctx.dual().spawn();
     // NOTE: in moonshot projects we seem to be using id 0 for special purposes,
     // so starting the ID from 1
-    let spd_1 = SPDRunner::spawn(&ctx, SPDTemplate {
-        spd_id: 1,
-    });
-    let spd_2 = SPDRunner::spawn(&ctx, SPDTemplate {
-        spd_id: 2,
-    });
-    let spd_3 = SPDRunner::spawn(&ctx, SPDTemplate {
-        spd_id: 3,
-    });
-    let spd_4 = SPDRunner::spawn(&ctx, SPDTemplate {
-        spd_id: 4,
-    });
+    let spd_1 = ctx.spd().id(1).spawn();
+    let spd_2 = ctx.spd().id(2).spawn();
+    let spd_3 = ctx.spd().id(3).spawn();
+    let spd_4 = ctx.spd().id(4).spawn();
 
     // throughput monitor: prints wall-clock packets/second per SPD and the
     // simulation speed as % of real time (simulated ps advanced per wall-clock s)

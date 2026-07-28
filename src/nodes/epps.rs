@@ -3,7 +3,7 @@ use std::sync::{Mutex, Condvar, Arc};
 use std::thread;
 use std::collections::BinaryHeap;
 
-use nalgebra::{SMatrix, Complex};
+use nalgebra::{SMatrix, Complex, vector};
 use smallvec::{
     SmallVec,
     smallvec,
@@ -43,6 +43,9 @@ use crate::types::core::{
 };
 use crate::types::physics::{
     PhotonicKrausOperators,
+};
+use crate::quantum::util::{
+    outer_product,
 };
 use crate::concurrency::snowflake;
 
@@ -313,6 +316,54 @@ pub struct EPPSTemplate {
     pub success_probability: f64,
 }
 
+pub struct EPPSBuilder<'a> {
+    template: EPPSTemplate,
+    ctx: &'a SimulationContext
+}
+
+impl<'a> EPPSBuilder<'a> {
+    pub fn new(ctx: &'a SimulationContext) -> Self {
+        let default_wave_profile = WaveProfile{
+            time_sigma: 150,
+            wavelength: 1550.0,
+            // TODO: Find a typical wavelength $\sigma$
+            wavelength_sigma: 1.0,
+        };
+        EPPSBuilder {
+            template: EPPSTemplate{
+                signal_profile: default_wave_profile.clone(),
+                idler_profile: default_wave_profile.clone(),
+                pump_frequency: 1.0E+9,
+                density_matrix: outer_product(vector![Complex::ZERO, Complex::ONE, Complex::ONE, Complex::ZERO]),
+                success_probability: 0.01,// 1% success rate results in 1.0E7 generations per second
+            },
+            ctx,
+        }
+    }
+    pub fn signal_profile(mut self, profile: WaveProfile) -> Self {
+        self.template.signal_profile = profile;
+        self
+    }
+    pub fn idler_profile(mut self, profile: WaveProfile) -> Self {
+        self.template.idler_profile = profile;
+        self
+    }
+    pub fn pump_frequency(mut self, pump_frequency: f64) -> Self {
+        self.template.pump_frequency = pump_frequency;
+        self
+    }
+    pub fn density_matrix(mut self, density_matrix: SMatrix<Complex<f32>, 4, 4>) -> Self {
+        self.template.density_matrix = density_matrix;
+        self
+    }
+    pub fn success_probability(mut self, success_probability: f64) -> Self {
+        self.template.success_probability = success_probability;
+        self
+    }
+    pub fn spawn(self) -> EPPSWorkerHandle {
+        EPPSRunner::spawn(self.ctx, self.template)
+    }
+}
 
 impl NodeTemplate for EPPSTemplate{
     fn rx_port_count(&self) -> usize {
