@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 rand = { version = "0.10.1" }
+rand_distr = { version = "0.6.0" }
 nalgebra = { version = "0.35.0" }
 smallvec = { version = "1.15.1" }
 

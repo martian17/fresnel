@@ -4,6 +4,8 @@ use std::sync::{Mutex, Condvar, Arc};
 use std::thread;
 use std::collections::BinaryHeap;
 use std::sync::mpsc;
+use rand::prelude::*;
+use rand_distr::StandardNormal;
 use std::f64::consts::PI;
 
 use crate::concurrency::context::{
@@ -23,7 +25,7 @@ use crate::concurrency::snowflake;
 #[derive(Clone, Debug)]
 pub struct WavePacket {
     pub time: Time,// ps
-    pub time_sigma: u32,// ps, three sigma
+    pub time_sigma: u32,// ps, single std dev.
     pub wavelength: f32,
     pub wavelength_sigma: f32,
     pub state_handle: u32,
@@ -84,6 +86,16 @@ impl WavePacket {
     pub fn set_snowflake(mut self) -> Self {
         self.snowflake = snowflake::next_u32();
         self
+    }
+    pub fn sample_time(&self) -> Time {
+        let dist: f64 = rand::rng().sample(StandardNormal);
+        let offset = (dist * self.time_sigma as f64).round() as i64;
+
+        if offset >= 0 {
+            self.time.saturating_add(offset as Time)
+        } else {
+            self.time.saturating_sub(offset.unsigned_abs())
+        }
     }
 }
 

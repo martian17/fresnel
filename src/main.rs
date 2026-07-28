@@ -160,7 +160,10 @@ fn entanglement_swap(){
 
 
 fn hom_experiment(odl_arm_1_m: f64, odl_arm_2_m: f64) {
-    let ctx = SimulationContext::new();
+    let ctx = SimulationContext::new().update_config(|config| {
+        config.batch.period = 200_000_000;
+        config.batch.max_size = 2000;
+    });
     let epps = ctx.epps().spawn();
 
     // free-space ODL: arm length -> propagation delay at vacuum c
@@ -172,6 +175,14 @@ fn hom_experiment(odl_arm_1_m: f64, odl_arm_2_m: f64) {
     ).spawn();
 
     let bs = ctx.dual().spawn();
+
+    let spd_fiber_1 = ctx.single().delay(
+        (0.3f64 / 299_792_458.0 * 1.0e12).round() as u64
+    ).spawn();
+    let spd_fiber_2 = ctx.single().delay(
+        (0.3f64 / 299_792_458.0 * 1.0e12).round() as u64
+    ).spawn();
+
     let spd_1 = ctx.spd().id(1).spawn();
     let spd_2 = ctx.spd().id(2).spawn();
     
@@ -179,8 +190,10 @@ fn hom_experiment(odl_arm_1_m: f64, odl_arm_2_m: f64) {
     odl_1.exit_port(0).connect(bs.entry_port(0));
     epps.exit_port(1).connect(odl_2.entry_port(0));
     odl_2.exit_port(0).connect(bs.entry_port(1));
-    bs.exit_port(0).connect(spd_1.entry_port(0));
-    bs.exit_port(1).connect(spd_2.entry_port(0));
+    bs.exit_port(0).connect(spd_fiber_1.entry_port(0));
+    bs.exit_port(1).connect(spd_fiber_2.entry_port(0));
+    spd_fiber_1.exit_port(0).connect(spd_1.entry_port(0));
+    spd_fiber_2.exit_port(0).connect(spd_2.entry_port(0));
 
     std::fs::create_dir_all("data").unwrap();
     let parquet_writer = ParquetWorker::spawn("data".into(), "hom_experiment".to_string());
@@ -206,6 +219,8 @@ fn hom_experiment(odl_arm_1_m: f64, odl_arm_2_m: f64) {
     bs.start();
     odl_1.start();
     odl_2.start();
+    spd_fiber_1.start();
+    spd_fiber_2.start();
     epps.start();
 
     spd_1.join();
@@ -213,6 +228,8 @@ fn hom_experiment(odl_arm_1_m: f64, odl_arm_2_m: f64) {
     bs.join();
     odl_1.join();
     odl_2.join();
+    spd_fiber_1.join();
+    spd_fiber_2.join();
     epps.join();
 }
 

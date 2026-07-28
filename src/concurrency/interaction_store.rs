@@ -325,7 +325,7 @@ impl CollapseResult {
         self.ref_cnt -= 1;
         match result {
             WpResult::Empty{..} => None,
-            WpResult::Success{..} => Some(wp.time),
+            WpResult::Success{..} => Some(wp.sample_time()),
         }
     }
     fn is_retirable(&self) -> bool {

@@ -63,6 +63,9 @@ pub struct SPDWorker {
     claimer_thread_handle: Option<thread::JoinHandle<()>>,
     worker_id: u16,
     spd_id: u16,
+    dead_time: u64,
+    dark_count: f64,
+    efficiency: f64,
 }
 
 impl Drop for SPDWorker {
@@ -91,12 +94,16 @@ impl NodeWorker for SPDWorker {
         })) as u16;
         let (tx, rx) = sync_channel::<WpBatch>(1);
         let (tx_settagger, rx_settagger) = channel::<SyncSender<TimeTagBatch>>();
+        let dead_time = template.dead_time;
+        let dark_count = template.dark_count;
+        let efficiency = template.efficiency;
         Self {
             settagger_channel: tx_settagger,
             // tagger_channel: None,
             claimer_channel: Some(tx),
             claimer_thread_handle: Some(thread::spawn(move || {
                 let mut tagger_channel = rx_settagger.try_recv().ok();
+                let mut last_click: Time = 0;
                 loop {
                     let mut batch = rx.recv().unwrap();
                     // polled after the batch recv: ConnectTimeTagger is handled on the
@@ -106,15 +113,44 @@ impl NodeWorker for SPDWorker {
                     if let Ok(tagger_channel_value) = rx_settagger.try_recv() {
                         tagger_channel = Some(tagger_channel_value);
                     }
-                    let result = ctx.interaction_store.claim_collapsed_packets(&mut batch.batch);
+                    let mut result = ctx.interaction_store.claim_collapsed_packets(&mut batch.batch);
+                    result.sort_unstable();
+                    // apply the dead time, dark count, and efficiency
+                    let mut filtered_result: Vec<u64> = Vec::new();
+                    for time in result.iter() {
+                        if rand::random_bool(1.0 - efficiency) {
+                            continue;
+                        }
+                        if last_click + dead_time > *time {
+                            continue;
+                        }
+                        let time_delta = (*time).saturating_sub(last_click);
+                        // TODO: Use poisson process here
+                        if rand::random_bool(time_delta as f64 / (1.0e12 / dark_count)) {
+                            filtered_result.push(rand::random_range(last_click..*time));
+                        }
+                        filtered_result.push(*time);
+                        last_click = *time;
+                    }
+                    let start_time = if let Some(min_time) = filtered_result.first() {
+                        batch.start_time.min(*min_time)
+                    } else {
+                        batch.start_time
+                    };
+                    let end_time = if let Some(max_time) = filtered_result.last() {
+                        batch.end_time.max(*max_time)
+                    } else {
+                        batch.end_time
+                    };
+
                     // println!("Collapse ratio: {} -> {}", batch.batch.len(), result.len());
                     if let Some(tagger_channel) = &tagger_channel {
                         // sent even when no tag survived collapse: the batch's end_time
                         // still advances this channel's frontier in the merger
                         let tagger_result = tagger_channel.send(TimeTagBatch{
-                            start_time: batch.start_time,
-                            end_time: batch.end_time,
-                            batch: result,
+                            start_time,
+                            end_time,
+                            batch: filtered_result,
                         });
                         // TODO: Handle stop properly
                         if tagger_result.is_err() {
@@ -128,6 +164,9 @@ impl NodeWorker for SPDWorker {
             })),
             worker_id,
             spd_id: template.spd_id,
+            dead_time,
+            dark_count,
+            efficiency,
         }
     }
     fn id(&self) -> u16 {
@@ -223,6 +262,9 @@ pub struct SPDWorkerHandle {
 
 pub struct SPDTemplate {
     pub spd_id: u16,
+    pub dead_time: u64,
+    pub dark_count: f64,
+    pub efficiency: f64,
 }
 
 impl NodeTemplate for SPDTemplate {
@@ -241,12 +283,27 @@ impl<'a> SPDBuilder<'a> {
         SPDBuilder {
             template: SPDTemplate {
                 spd_id: 0,
+                dead_time: 20_000,// 20ns
+                dark_count: 100.0, // 100 per second
+                efficiency: 0.9,
             },
             ctx,
         }
     }
     pub fn id(mut self, id: u16) -> Self {
         self.template.spd_id = id;
+        self
+    }
+    pub fn dead_time(mut self, dead_time: u64) -> Self {
+        self.template.dead_time = dead_time;
+        self
+    }
+    pub fn dark_count(mut self, dark_count: f64) -> Self {
+        self.template.dark_count = dark_count;
+        self
+    }
+    pub fn efficiency(mut self, efficiency: f64) -> Self {
+        self.template.efficiency = efficiency;
         self
     }
     pub fn spawn(self) -> SPDWorkerHandle {
