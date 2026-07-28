@@ -223,7 +223,7 @@ the merged stream globally sorted while every channel runs at full speed.
 | Component | Models | Physics |
 |---|---|---|
 | **EPPS** | Entangled-photon-pair source | Emits signal/idler pairs on the pump clock. Default: Ψ⁺ Bell-state density matrix, 1 GHz pump, 1 % success → 10⁷ pairs/s, σ = 75 ps, λ = 1550 nm. |
-| **SinglePort** | Wave plates, polarizers, lossy fiber, ODL, fiber spools, polarization controllers | Applies up to 7 Kraus operators from a 7 × 7 χ-matrix over the {|H⟩, |V⟩, |vac⟩} basis (Pauli channel + two polarization-dependent-loss terms + vacuum identity). Adds a configurable delay. Default: lossless identity, 0 delay. |
+| **SinglePort** | Wave plates, polarizers, lossy fiber, ODL, fiber spools, polarization controllers | Applies up to 7 Kraus operators from a 7 × 7 χ-matrix over the \{\|H⟩, \|V⟩, \|vac⟩\} basis (Pauli channel + two polarization-dependent-loss terms + vacuum identity). Adds a configurable delay. Default: lossless identity, 0 delay. |
 | **DualPort** | Beamsplitter, polarizing beamsplitter, imperfect switch | Applies a 4 × 4 scattering matrix on (left_H, left_V, right_H, right_V). Merges the islands of overlapping input packets. Default: symmetric 50:50 BS, polarization preserving. |
 | **SPD** | Single-photon detector (SNSPD) | Collapses the arriving island (0 or 1 click per wave packet), then applies efficiency, dark counts, and dead time. Emits time tags. |
 
