@@ -17,7 +17,7 @@ use crate::wavepacket::wp::{
     RxPort,
 };
 
-}
+use crate::wavepacket::wp::WpBatch;
 
 
 
