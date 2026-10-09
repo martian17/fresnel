@@ -5,6 +5,7 @@ mod util;
 mod collapser;
 mod parquet;
 mod quantum;
+mod wavepackets;
 
 use crate::concurrency::context::{
     SimulationContext,
@@ -32,10 +33,10 @@ fn monitor_throughput(ctx: SimulationContext){
         for elapsed in 1u64.. {
             std::thread::sleep(std::time::Duration::from_secs(1));
             // SPD telemetry
-            let spd_packet_counts = ctx.telemetry.spd.iter().map(|(i, metrics)| {
+            let spd_packet_counts = ctx.telemetry.spd.iter().map(|(_i, metrics)| {
                 format!("{:>8}", metrics.base.packet_consumed.load(Ordering::Relaxed))
             }).collect::<Vec<_>>().join(" ");
-            let sim_time = ctx.telemetry.spd.iter().map(|(i, metrics)| {
+            let sim_time = ctx.telemetry.spd.iter().map(|(_i, metrics)| {
                 metrics.base.sim_time.load(Ordering::Relaxed)
             }).min().unwrap();
             let time_dialation = (sim_time - prev_sim_time) as f64 / 1.0e12 * 100.0;
@@ -46,26 +47,26 @@ fn monitor_throughput(ctx: SimulationContext){
 
 
             // total packet telemetry
-            let total_packets: u64 = ctx.telemetry.single.iter().map(|(i, metrics)| {
+            let total_packets: u64 = ctx.telemetry.single.iter().map(|(_i, metrics)| {
                 metrics.packet_consumed.load(Ordering::Relaxed)
             }).sum::<u64>() + 
-            ctx.telemetry.dual.iter().map(|(i, metrics)| {
+            ctx.telemetry.dual.iter().map(|(_i, metrics)| {
                 metrics.base.packet_consumed.load(Ordering::Relaxed)
             }).sum::<u64>() + 
-            ctx.telemetry.spd.iter().map(|(i, metrics)| {
+            ctx.telemetry.spd.iter().map(|(_i, metrics)| {
                 metrics.base.packet_consumed.load(Ordering::Relaxed)
             }).sum::<u64>();
 
             total_historical_packets += total_packets;
 
             // reset it before the next round
-            for (i, record) in ctx.telemetry.single.iter(){
+            for (_i, record) in ctx.telemetry.single.iter(){
                 record.packet_consumed.store(0, Ordering::Relaxed);
             }
-            for (i, record) in ctx.telemetry.dual.iter(){
+            for (_i, record) in ctx.telemetry.dual.iter(){
                 record.base.packet_consumed.store(0, Ordering::Relaxed);
             }
-            for (i, record) in ctx.telemetry.spd.iter(){
+            for (_i, record) in ctx.telemetry.spd.iter(){
                 record.base.packet_consumed.store(0, Ordering::Relaxed);
             }
             println!(
