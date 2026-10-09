@@ -4,9 +4,6 @@ use std::sync::{Arc};
 use nalgebra::{SMatrix, Complex, matrix};
 
 use crate::nodes::core::{
-    WavePacket,
-    WpBatch,
-    TxPort,
     NodeRunner,
     NodeHandle,
     NodeWorker,
@@ -14,6 +11,13 @@ use crate::nodes::core::{
     TimedControlEvent,
     RunnerContext,
 };
+
+use crate::wavepacket::wp::{
+    WavePacket,
+    WpBatch,
+    TxPort,
+};
+
 use crate::concurrency::interaction_store::{
     Operator,
 };

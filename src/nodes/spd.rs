@@ -4,14 +4,17 @@ use std::thread;
 use rayon::prelude::*;
 
 use crate::nodes::core::{
-    WpBatch,
-    TxPort,
     NodeRunner,
     NodeHandle,
     NodeWorker,
     NodeTemplate,
     TimedControlEvent,
     RunnerContext,
+};
+
+use crate::wavepacket::wp::{
+    WpBatch,
+    TxPort,
 };
 use crate::concurrency::interaction_store::{
     InteractionCell,

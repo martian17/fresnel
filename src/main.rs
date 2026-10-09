@@ -5,7 +5,7 @@ mod util;
 mod collapser;
 mod parquet;
 mod quantum;
-mod wavepackets;
+mod wavepacket;
 
 use crate::concurrency::context::{
     SimulationContext,

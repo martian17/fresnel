@@ -5,9 +5,6 @@ use nalgebra::{SMatrix, Complex, vector};
 use rand;
 
 use crate::nodes::core::{
-    WavePacket,
-    WpBatch,
-    TxPort,
     NodeRunner,
     NodeHandle,
     NodeWorker,
@@ -15,6 +12,13 @@ use crate::nodes::core::{
     RunnerContext,
     NodeTemplate,
 };
+
+use crate::wavepacket::wp::{
+    WavePacket,
+    WpBatch,
+    TxPort,
+};
+
 use crate::concurrency::interaction_store::{
     InteractionCell,
     IslandOfInteraction,
