@@ -1,4 +1,4 @@
-use crate::types::core::WrappingIterU32;
+use crate::util::core::WrappingIterU32;
 
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]

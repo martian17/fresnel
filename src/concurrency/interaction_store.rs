@@ -8,7 +8,7 @@ use crate::concurrency::registry::{
     CellStateRegistry,
 };
 use crate::nodes::core::WavePacket;
-use crate::types::core::WrappingIterU32;
+use crate::util::core::WrappingIterU32;
 
 use crate::types::core::{
     OpHandle,
