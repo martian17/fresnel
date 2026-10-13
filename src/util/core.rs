@@ -2,8 +2,8 @@ use crate::types::core::Time;
 use std::cmp::Ordering;
 
 pub struct Timed<T> {
-    time: Time,
-    value: T,//NodeControlEvent<T>
+    pub time: Time,
+    pub value: T,//NodeControlEvent<T>
 }
 
 impl <T> Timed<T> {
@@ -33,6 +33,18 @@ impl <T>Ord for Timed<T> {
 impl <T>PartialOrd for Timed<T> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+// TODO: Turn this into derivable trait
+pub trait Timable {
+    fn timed(self, time: Time) -> Timed<Self> where
+        Self: Sized
+    {
+        Timed::<Self> {
+            time,
+            value: self,
+        }
     }
 }
 

@@ -8,8 +8,12 @@ use crate::nodes::core::{
     NodeHandle,
     NodeWorker,
     NodeTemplate,
-    TimedControlEvent,
+    NodeControlEvent,
     RunnerContext,
+};
+
+use crate::util::core::{
+    Timed,
 };
 
 use crate::wavepacket::wp::{
@@ -282,7 +286,7 @@ impl NodeWorker for DualPortWorker {
 
 pub struct DualPortWorkerHandle {
     pub ports: Vec<TxPort>,
-    pub control: Sender<TimedControlEvent<DualPortEvent>>,
+    pub control: Sender<Timed<NodeControlEvent<DualPortEvent>>>,
     pub worker_id: OpStoreHandle,// index in the operator store
     pub join_handle: std::thread::JoinHandle<()>,
 }
@@ -335,7 +339,7 @@ impl NodeHandle for DualPortWorkerHandle {
     type CustomControlEvent = DualPortEvent;
     type NodeTemplate = DualPortTemplate;
 
-    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, worker_id: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, worker_id: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<Timed<NodeControlEvent<Self::CustomControlEvent>>>) -> Self {
         Self {
             ports,
             control,
@@ -346,7 +350,7 @@ impl NodeHandle for DualPortWorkerHandle {
     fn get_tx_ports(&self) -> &Vec<TxPort>{
         &self.ports
     }
-    fn get_control_channel(&self) -> &Sender<TimedControlEvent<Self::CustomControlEvent>> {
+    fn get_control_channel(&self) -> &Sender<Timed<NodeControlEvent<Self::CustomControlEvent>>> {
         &self.control
     }
     fn join(self) {

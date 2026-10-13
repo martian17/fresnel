@@ -8,9 +8,13 @@ use crate::nodes::core::{
     NodeRunner,
     NodeHandle,
     NodeWorker,
-    TimedControlEvent,
+    NodeControlEvent,
     RunnerContext,
     NodeTemplate,
+};
+
+use crate::util::core::{
+    Timed,
 };
 
 use crate::wavepacket::wp::{
@@ -217,7 +221,7 @@ pub struct EPPSWorkerHandle {
     // no optical reception ports, just controls
     // pub control: Sender<EPPSControlEvent>,
 
-    pub control: Sender<TimedControlEvent<EPPSEvent>>,
+    pub control: Sender<Timed<NodeControlEvent<EPPSEvent>>>,
     pub worker_id: OpStoreHandle,// index in the operator store
     pub join_handle: std::thread::JoinHandle<()>,
 }
@@ -226,7 +230,7 @@ impl NodeHandle for EPPSWorkerHandle {
     type CustomControlEvent = EPPSEvent;
     type NodeTemplate = EPPSTemplate;
 
-    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, worker_id: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, _ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, worker_id: OpStoreHandle, join_handle: std::thread::JoinHandle<()>, _ports: Vec<TxPort>, control: Sender<Timed<NodeControlEvent<Self::CustomControlEvent>>>) -> Self {
         Self {
             control,
             worker_id,
@@ -236,7 +240,7 @@ impl NodeHandle for EPPSWorkerHandle {
     fn get_tx_ports(&self) -> &Vec<TxPort>{
         panic!("NodeHandle has no input port");
     }
-    fn get_control_channel(&self) -> &Sender<TimedControlEvent<Self::CustomControlEvent>> {
+    fn get_control_channel(&self) -> &Sender<Timed<NodeControlEvent<Self::CustomControlEvent>>> {
         &self.control
     }
     fn join(self) {

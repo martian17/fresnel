@@ -8,8 +8,12 @@ use crate::nodes::core::{
     NodeHandle,
     NodeWorker,
     NodeTemplate,
-    TimedControlEvent,
+    NodeControlEvent,
     RunnerContext,
+};
+
+use crate::util::core::{
+    Timed,
 };
 
 use crate::wavepacket::wp::{
@@ -236,7 +240,7 @@ impl NodeWorker for SPDWorker {
 
 pub struct SPDWorkerHandle {
     pub ports: Vec<TxPort>,
-    pub control: Sender<TimedControlEvent<SPDEvent>>,
+    pub control: Sender<Timed<NodeControlEvent<SPDEvent>>>,
     pub join_handle: std::thread::JoinHandle<()>,
     pub worker_id: u16,
     pub spd_id: u16,
@@ -297,7 +301,7 @@ impl NodeHandle for SPDWorkerHandle {
     type CustomControlEvent = SPDEvent;
     type NodeTemplate = SPDTemplate;
 
-    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, worker_id: u16, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<TimedControlEvent<Self::CustomControlEvent>>) -> Self {
+    fn new(ctx: SimulationContext, template: &Self::NodeTemplate, worker_id: u16, join_handle: std::thread::JoinHandle<()>, ports: Vec<TxPort>, control: Sender<Timed<NodeControlEvent<Self::CustomControlEvent>>>) -> Self {
         Self {
             ports,
             control,
@@ -309,7 +313,7 @@ impl NodeHandle for SPDWorkerHandle {
     fn get_tx_ports(&self) -> &Vec<TxPort>{
         &self.ports
     }
-    fn get_control_channel(&self) -> &Sender<TimedControlEvent<Self::CustomControlEvent>> {
+    fn get_control_channel(&self) -> &Sender<Timed<NodeControlEvent<Self::CustomControlEvent>>> {
         &self.control
     }
     fn join(self) {
