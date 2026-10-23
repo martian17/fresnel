@@ -177,6 +177,7 @@ impl<T: NodeWorker + 'static> NodeRunner<T> {
             };
             (tx, rx)
         }).unzip();
+        // Creating the control channels
         let (control_tx, control_rx) = channel::<Timed<NodeControlEvent<T::CustomControlEvent>>>();
         let worker = T::new(ctx.clone(), &template);
         let worker_id = worker.id();
